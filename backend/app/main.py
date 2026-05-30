@@ -1,5 +1,9 @@
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .ai_client import AiClientError, chat_completion
 from .prompts import (
@@ -24,7 +28,11 @@ from .schemas import (
 from .video import import_video_metadata
 
 
-app = FastAPI(title="Kaopy Mobile PWA API", version="0.1.0")
+ROOT_DIR = Path(__file__).resolve().parents[2]
+STATIC_DIR = ROOT_DIR / "backend" / "static"
+
+
+app = FastAPI(title="KaoBuddy API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,6 +41,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/", include_in_schema=False)
+async def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/health")
@@ -141,4 +156,3 @@ async def import_video(request: VideoImportRequest) -> VideoImportResponse:
         return await import_video_metadata(str(request.url))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"视频信息读取失败：{exc}") from exc
-
