@@ -1,0 +1,17 @@
+{
+  "name": "考搭子 KaoBuddy",
+  "short_name": "考搭子",
+  "description": "手机可用的免费备考 PWA，用自己的 API 做计划、学习、刷题和模考。",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f5ef",
+  "theme_color": "#28524f",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
