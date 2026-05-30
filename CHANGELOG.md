@@ -7,6 +7,7 @@
 ### 新增
 
 - FastAPI 后端，提供 AI 转发、计划生成、讲解、练习、模考、手写识别和视频导入接口。
+- FastAPI 直接托管可用页面，双击 `open-kaobuddy.command` 后就能打开本地版本。
 - React + Vite PWA 前端，支持手机浏览器使用和添加到桌面。
 - IndexedDB 本地存储，用来保存考试项目、资料和 AI 输出。
 - 自定义 OpenAI-compatible API 配置，内置 DeepSeek、Kimi、OpenAI 预设。
@@ -18,4 +19,3 @@
 - 视频字幕抓取依赖公开字幕和页面可访问性，抓不到时需要手动补充资料。
 - 手写 PDF 的扫描图识别还没有做逐页转图增强。
 - 第一版不包含账号、云同步和多人协作。
-

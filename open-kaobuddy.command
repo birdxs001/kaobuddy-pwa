@@ -3,7 +3,8 @@ set -e
 
 cd "$(dirname "$0")"
 
-if [ ! -d ".venv" ]; then
+if [ ! -x ".venv/bin/python" ] || ! .venv/bin/python -c "import sys" >/dev/null 2>&1; then
+  rm -rf .venv
   /usr/bin/python3 -m venv .venv
 fi
 
