@@ -448,9 +448,18 @@ small {
 
 .list {
   display: grid;
+  align-content: start;
   gap: 12px;
   max-height: 620px;
   overflow: auto;
+}
+
+.material-library {
+  align-content: start;
+}
+
+.material-list {
+  max-height: none;
 }
 
 .list.compact {
@@ -577,6 +586,13 @@ small {
 
 .plan-actions {
   margin-bottom: 16px;
+}
+
+.result-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
 }
 
 .module-form {

@@ -87,6 +87,32 @@ const visibleTabs: { tab: ProjectTab; label: string }[] = [
   { tab: "review", label: "复盘" }
 ];
 
+const knowledgeTerms = [
+  "操作系统引论",
+  "进程同步",
+  "进程通信",
+  "进程调度",
+  "处理器调度",
+  "线程",
+  "进程",
+  "互斥",
+  "信号量",
+  "管程",
+  "死锁",
+  "内存管理",
+  "虚拟存储",
+  "页面置换",
+  "分页",
+  "分段",
+  "文件目录",
+  "文件管理",
+  "磁盘调度",
+  "磁盘存储",
+  "设备管理",
+  "输入输出",
+  "I/O"
+];
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -208,16 +234,17 @@ function extractModuleTitle(line: string) {
     .replace(/^(模块|知识点|考点)\s*\d*\s*[:：]?\s*/i, "")
     .replace(/^(名称|标题)\s*[:：]?\s*/i, "")
     .replace(/\s+/g, "");
-  if (!candidate) return "";
-  if (candidate.length < 2 || candidate.length > 16) return "";
-  if (/第\s*\d+\s*(天|章|页)|每天|天数|高频|聚焦|高效|综合|复习|练习|任务|计划|安排|资料|时间|完成|根据|模块$/.test(candidate)) return "";
+  const term = knowledgeTerms.find((item) => cleaned.includes(item));
+  if (!candidate) return term || "";
+  if (candidate.length < 2 || candidate.length > 16) return term || "";
+  if (/第\s*\d+\s*(天|章|页)|每天|天数|高频|聚焦|高效|综合|复习|练习|任务|计划|安排|资料|时间|完成|根据|模块$/.test(candidate)) return term || "";
   return candidate;
 }
 
-function displayModuleTitle(title: string) {
+function displayModuleTitle(title: string, note?: string) {
   const cleaned = stripMarkdown(title).replace(/\s+/g, "");
-  if (!extractModuleTitle(cleaned)) return "待重新拆分";
-  return compactTitle(cleaned, "知识点");
+  const extracted = extractModuleTitle(cleaned) || extractModuleTitle(note || "");
+  return extracted || compactTitle(cleaned, "知识点");
 }
 
 function parseModulesFromPlan(content: string, projectId: string, noteId: string, existingCount: number): StudyTask[] {
@@ -343,6 +370,18 @@ export default function App() {
   const completedModules = scopedModules.filter((item) => moduleStatus(item) === "done").length;
   const progress = scopedModules.length ? Math.round((completedModules / scopedModules.length) * 100) : 0;
   const busy = Boolean(busyLabel);
+  const currentFocusModule = scopedModules.find((item) => moduleStatus(item) !== "done");
+  const latestPlanNote = scopedNotes.find((note) => note.mode === "plan");
+  const latestTeachNote = scopedNotes.find((note) => note.mode === "teach");
+  const latestPracticeNote = scopedNotes.find((note) => note.mode === "practice");
+  const latestMockNote = scopedNotes.find((note) => note.mode === "mock");
+  const resultEntries = [
+    { label: "查看计划结果", note: latestPlanNote },
+    { label: "查看讲解结果", note: latestTeachNote },
+    { label: "查看练习结果", note: latestPracticeNote },
+    { label: "查看模考结果", note: latestMockNote }
+  ].filter((item): item is { label: string; note: AiNote } => Boolean(item.note));
+  const currentResultNote = resultNote || scopedNotes[0] || null;
 
   function projectProgress(projectId: string) {
     const projectModules = tasks.filter((task) => task.project_id === projectId);
@@ -884,7 +923,7 @@ export default function App() {
             </div>
             <div className="panel metric-panel">
               <span>当前重点</span>
-              <strong className="focus-text">{scopedModules.find((item) => moduleStatus(item) !== "done") ? displayModuleTitle(scopedModules.find((item) => moduleStatus(item) !== "done")!.title) : "暂无"}</strong>
+              <strong className="focus-text">{currentFocusModule ? displayModuleTitle(currentFocusModule.title, currentFocusModule.note) : "暂无"}</strong>
               <small>去计划页拖动顺序或标记完成。</small>
             </div>
             <div className="panel metric-panel">
@@ -926,9 +965,9 @@ export default function App() {
               <label>B站等视频链接<input value={videoUrl} onChange={(event) => setVideoUrl(event.target.value)} placeholder="https://www.bilibili.com/video/..." /></label>
               <button onClick={handleVideoImport} disabled={!activeProject || busy}>导入视频字幕</button>
             </div>
-            <div className="panel">
+            <div className="panel material-library">
               <h2>资料库</h2>
-              <div className="list">
+              <div className="list material-list">
                 {scopedMaterials.map((item) => (
                   <article key={item.id} className="item material-row">
                     <div className="item-head">
@@ -949,11 +988,27 @@ export default function App() {
               <h2>生成知识模块计划</h2>
               <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 只剩三天，先救选择题相关模块。" /></label>
               <div className="actions wrap">
-                <button onClick={() => runMode("plan", "知识模块计划")} disabled={busy}>调用 AI 生成计划</button>
+                <button onClick={() => runMode("plan", "知识模块计划")} disabled={busy}>生成计划</button>
                 <button className="secondary" onClick={() => runMode("teach", "考点讲解")} disabled={busy}>生成讲解</button>
                 <button className="secondary" onClick={() => runMode("practice", "练习反馈")} disabled={busy}>生成/批改练习</button>
                 <button className="secondary" onClick={() => runMode("mock-exam", "短模考")} disabled={busy}>生成模考</button>
               </div>
+              {!!resultEntries.length && (
+                <div className="result-shortcuts">
+                  {resultEntries.map((entry) => (
+                    <button
+                      key={entry.note.id}
+                      className="mini"
+                      onClick={() => {
+                        setResultNote(entry.note);
+                        setActiveTab("result");
+                      }}
+                    >
+                      {entry.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <form className="panel module-form" onSubmit={saveModule}>
@@ -989,7 +1044,7 @@ export default function App() {
                           moveModule(column.status, item.id);
                         }}
                       >
-                        <strong>{displayModuleTitle(item.title)}</strong>
+                        <strong>{displayModuleTitle(item.title, item.note)}</strong>
                         <div className="module-meta">
                           <span>{item.estimated_minutes} 分钟</span>
                         </div>
@@ -1009,17 +1064,17 @@ export default function App() {
           <section className="app-section">
             <div className="panel plan-preview">
               <span className="kind-badge">AI 生成结果</span>
-              <h2>{resultNote?.title || "AI 结果"}</h2>
-              {renderHumanText(resultNote?.content || scopedNotes[0]?.content || "")}
+              <h2>{currentResultNote?.title || "AI 结果"}</h2>
+              {renderHumanText(currentResultNote?.content || "")}
               <div className="actions wrap">
-                {resultNote?.mode === "plan" && <button onClick={() => createModulesFromPlan(resultNote)}>确认，拆成模块卡片</button>}
-                {resultNote?.mode === "practice" && <button onClick={() => {
-                  setMistakeDraft({ question: resultNote.content.slice(0, 220), reason: "从练习反馈保存", fix: "按 AI 解析复盘" });
+                {currentResultNote?.mode === "plan" && <button onClick={() => createModulesFromPlan(currentResultNote)}>确认，拆成模块卡片</button>}
+                {currentResultNote?.mode === "practice" && <button onClick={() => {
+                  setMistakeDraft({ question: currentResultNote.content.slice(0, 220), reason: "从练习反馈保存", fix: "按 AI 解析复盘" });
                   setActiveTab("review");
                   setStatus("已把练习反馈放到错题草稿，可以改完保存。");
                 }}>放进错题草稿</button>}
-                {resultNote?.mode === "mock" && <button onClick={() => {
-                  setMockDraft({ title: resultNote.title, score: "", duration_minutes: 30, feedback: resultNote.content.slice(0, 420) });
+                {currentResultNote?.mode === "mock" && <button onClick={() => {
+                  setMockDraft({ title: currentResultNote.title, score: "", duration_minutes: 30, feedback: currentResultNote.content.slice(0, 420) });
                   setActiveTab("review");
                   setStatus("已把模考反馈放到记录草稿，补个分数就能保存。");
                 }}>放进模考记录</button>}
