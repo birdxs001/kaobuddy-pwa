@@ -64,13 +64,3 @@ export function documentPlaceholder(file: File) {
     "如果要让 AI 使用正文内容，可以先把文档另存为 PDF，或复制重点内容到文本资料。"
   ].join("\n");
 }
-
-export function downloadText(filename: string, text: string, type = "application/json") {
-  const blob = new Blob([text], { type });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
-}

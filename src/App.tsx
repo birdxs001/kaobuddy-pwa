@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { importVideo, recognizeHandwriting, runAi, testApiConfig } from "./api";
-import { documentPlaceholder, downloadText, readAsDataUrl, readPdfText, readTextFile } from "./fileReaders";
+import { documentPlaceholder, readAsDataUrl, readPdfText, readTextFile } from "./fileReaders";
 import { createId, storage } from "./storage";
 import type {
   AiNote,
@@ -763,18 +763,6 @@ export default function App() {
     await refresh();
   }
 
-  async function exportData() {
-    const data = await storage.exportAll();
-    downloadText(`kaobuddy-v2-${dateKey()}.json`, JSON.stringify(data, null, 2));
-  }
-
-  async function importData(file: File) {
-    const data = JSON.parse(await file.text());
-    await storage.importAll(data);
-    setStatus(`导入完成。${data.version === 1 ? "这是 v1 备份，二版模块数据先按空白开始。" : ""}`);
-    await refresh();
-  }
-
   const apiPanel = (
     <form className="panel api-panel" onSubmit={saveApi}>
       <h2>连接 AI</h2>
@@ -1107,11 +1095,6 @@ export default function App() {
           </section>
         )}
 
-        <section className="panel utility app-section">
-          <h2>备份</h2>
-          <button onClick={exportData}>导出 JSON</button>
-          <label className="file">导入 JSON<input type="file" accept="application/json,.json" onChange={(event) => event.target.files?.[0] && importData(event.target.files[0])} /></label>
-        </section>
       </section>
     </main>
   );
