@@ -30,9 +30,11 @@ from .video import import_video_metadata
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATIC_DIR = ROOT_DIR / "backend" / "static"
+DIST_DIR = ROOT_DIR / "dist"
+PUBLIC_DIR = ROOT_DIR / "public"
 
 
-app = FastAPI(title="KaoBuddy API", version="0.1.0")
+app = FastAPI(title="KaoBuddy API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,11 +45,36 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+ASSETS_DIR = DIST_DIR / "assets" if (DIST_DIR / "assets").exists() else STATIC_DIR / "assets"
+ICONS_DIR = DIST_DIR / "icons" if (DIST_DIR / "icons").exists() else STATIC_DIR / "icons"
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+if ICONS_DIR.exists():
+    app.mount("/icons", StaticFiles(directory=ICONS_DIR), name="icons")
 
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    dist_index = DIST_DIR / "index.html"
+    return FileResponse(dist_index if dist_index.exists() else STATIC_DIR / "index.html")
+
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+async def manifest() -> FileResponse:
+    dist_manifest = DIST_DIR / "manifest.webmanifest"
+    static_manifest = STATIC_DIR / "manifest.webmanifest"
+    if dist_manifest.exists():
+        return FileResponse(dist_manifest)
+    return FileResponse(static_manifest if static_manifest.exists() else PUBLIC_DIR / "manifest.webmanifest")
+
+
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker() -> FileResponse:
+    dist_worker = DIST_DIR / "sw.js"
+    static_worker = STATIC_DIR / "sw.js"
+    if dist_worker.exists():
+        return FileResponse(dist_worker)
+    return FileResponse(static_worker if static_worker.exists() else PUBLIC_DIR / "sw.js")
 
 
 @app.get("/health")
@@ -90,7 +117,7 @@ async def make_plan(request: AiRequest) -> AiResponse:
     return await _run_ai(
         request,
         PLAN_SYSTEM_PROMPT,
-        "请输出 1-10 天冲刺备考计划，包含每日任务、优先级、预计耗时、练习安排和查漏方式。",
+        "请输出一组知识点模块计划，不按日期排。每个模块用独立小节呈现，包含模块名、优先级、预计学习时间、为什么重要、建议练习方式和完成标准。",
     )
 
 

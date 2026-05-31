@@ -1,4 +1,4 @@
-export type MaterialKind = "text" | "file" | "handwriting" | "video" | "pdf" | "markdown";
+export type MaterialKind = "text" | "file" | "handwriting" | "video" | "pdf" | "markdown" | "document";
 
 export type ProviderPreset = {
   provider_name: string;
@@ -45,11 +45,64 @@ export type AiNote = {
   created_at: string;
 };
 
+export type StudyTask = {
+  id: string;
+  project_id: string;
+  title: string;
+  date: string;
+  estimated_minutes: number;
+  status: "todo" | "done";
+  module_status?: "todo" | "doing" | "done";
+  priority?: "low" | "medium" | "high";
+  order?: number;
+  source_note_id?: string;
+  note?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Mistake = {
+  id: string;
+  project_id: string;
+  question: string;
+  reason: string;
+  fix: string;
+  status: "new" | "reviewed";
+  source_note_id?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WeakPoint = {
+  id: string;
+  project_id: string;
+  title: string;
+  evidence: string;
+  severity: "low" | "medium" | "high";
+  last_reviewed_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MockAttempt = {
+  id: string;
+  project_id: string;
+  title: string;
+  score: string;
+  duration_minutes: number;
+  feedback: string;
+  source_note_id?: string;
+  created_at: string;
+};
+
 export type AppExport = {
-  version: 1;
+  version: 1 | 2;
   exported_at: string;
   projects: StudyProject[];
   materials: StudyMaterial[];
   notes: AiNote[];
+  tasks?: StudyTask[];
+  mistakes?: Mistake[];
+  weak_points?: WeakPoint[];
+  mock_attempts?: MockAttempt[];
 };
-

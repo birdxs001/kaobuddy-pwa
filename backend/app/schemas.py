@@ -30,7 +30,7 @@ class StudyProject(BaseModel):
 
 class MaterialSummary(BaseModel):
     title: str
-    kind: Literal["text", "file", "handwriting", "video", "pdf", "markdown"]
+    kind: Literal["text", "file", "handwriting", "video", "pdf", "markdown", "document"]
     content: str = ""
 
 
@@ -81,4 +81,3 @@ class VideoImportResponse(BaseModel):
 
 class AiResponse(BaseModel):
     content: str
-
