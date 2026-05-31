@@ -117,7 +117,7 @@ async def make_plan(request: AiRequest) -> AiResponse:
     return await _run_ai(
         request,
         PLAN_SYSTEM_PROMPT,
-        "请输出一组知识点模块计划，不按日期排。每个模块用独立小节呈现，包含模块名、优先级、预计学习时间、为什么重要、建议练习方式和完成标准。",
+        "请输出给学生直接看的知识点模块计划，不按日期排。每个模块用自然中文独立小节呈现，包含模块名、优先级、预计学习时间、为什么重要、建议练习方式和完成标准。不要输出 JSON、数组或字段名。",
     )
 
 

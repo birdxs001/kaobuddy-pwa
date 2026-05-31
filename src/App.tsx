@@ -181,8 +181,48 @@ function compactTitle(raw: string, fallback: string) {
   return title.length > 18 ? `${title.slice(0, 18)}...` : title;
 }
 
+function getJsonArrayText(text: string) {
+  const cleaned = stripMarkdown(text);
+  const start = cleaned.indexOf("[");
+  const end = cleaned.lastIndexOf("]");
+  return start >= 0 && end > start ? cleaned.slice(start, end + 1) : "";
+}
+
+function jsonModulesToHumanText(text: string) {
+  const jsonText = getJsonArrayText(text);
+  if (!jsonText) return "";
+  try {
+    const data = JSON.parse(jsonText);
+    if (!Array.isArray(data)) return "";
+    const modules = data
+      .map((item) => {
+        if (!item || typeof item !== "object") return "";
+        const record = item as Record<string, unknown>;
+        const title = String(record.title || record.name || record.module || record.moduleName || "").trim();
+        if (!title) return "";
+        const minutes = record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes;
+        const priority = String(record.priority || "").trim();
+        const note = String(record.note || record.reason || record.description || record.practice || "").trim();
+        return [
+          `模块：${title}`,
+          minutes ? `预计时间：${minutes} 分钟` : "",
+          priority ? `优先级：${priority}` : "",
+          note ? `说明：${note}` : ""
+        ].filter(Boolean).join("\n");
+      })
+      .filter(Boolean);
+    return modules.join("\n\n");
+  } catch {
+    return "";
+  }
+}
+
+function humanReadableAiText(text: string) {
+  return jsonModulesToHumanText(text) || stripMarkdown(text);
+}
+
 function renderHumanText(text: string) {
-  const blocks = stripMarkdown(text).split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  const blocks = humanReadableAiText(text).split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
   if (!blocks.length) return <p className="muted">暂无内容。</p>;
   return (
     <div className="ai-text">
@@ -248,6 +288,43 @@ function displayModuleTitle(title: string, note?: string) {
 }
 
 function parseModulesFromPlan(content: string, projectId: string, noteId: string, existingCount: number): StudyTask[] {
+  const jsonText = getJsonArrayText(content);
+  if (jsonText) {
+    try {
+      const data = JSON.parse(jsonText);
+      if (Array.isArray(data)) {
+        const seen = new Set<string>();
+        return data.flatMap((item, index) => {
+          if (!item || typeof item !== "object") return [];
+          const record = item as Record<string, unknown>;
+          const rawTitle = String(record.title || record.name || record.module || record.moduleName || "");
+          const note = String(record.note || record.reason || record.description || record.practice || "");
+          const title = extractModuleTitle(rawTitle) || extractModuleTitle(note) || compactTitle(rawTitle, "知识点");
+          if (!title || seen.has(title)) return [];
+          seen.add(title);
+          const rawMinutes = Number(record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes);
+          const line = humanReadableAiText(JSON.stringify([record]));
+          return [{
+            id: createId("module"),
+            project_id: projectId,
+            title,
+            date: dateKey(),
+            estimated_minutes: Number.isFinite(rawMinutes) ? normalizeMinutes(rawMinutes) : 45,
+            status: "todo",
+            module_status: "todo",
+            priority: parsePriority(String(record.priority || "")),
+            order: existingCount + index,
+            source_note_id: noteId,
+            note: line || note || rawTitle,
+            created_at: nowIso(),
+            updated_at: nowIso()
+          }];
+        });
+      }
+    } catch {
+      // Fall back to line parsing below.
+    }
+  }
   const rawLines = content
     .split(/\n+/)
     .map((line) => stripMarkdown(line).replace(/^[\s\-*•\d.、)]+/, "").trim())
