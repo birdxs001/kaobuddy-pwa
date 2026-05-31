@@ -319,7 +319,8 @@ small {
 
 .progress-card strong,
 .metric-panel strong {
-  font-size: 30px;
+  font-size: 26px;
+  line-height: 1.2;
 }
 
 .progress {
@@ -373,6 +374,10 @@ small {
 
 .metric-panel strong {
   overflow-wrap: anywhere;
+}
+
+.metric-panel .focus-text {
+  font-size: 22px;
 }
 
 .wide {
@@ -461,6 +466,10 @@ small {
   background: #f8f5ed;
 }
 
+.material-row {
+  padding: 16px;
+}
+
 .item-head {
   display: flex;
   gap: 10px;
@@ -547,16 +556,17 @@ small {
 
 .ai-text {
   display: grid;
-  gap: 10px;
-  max-height: 420px;
+  gap: 8px;
+  max-height: 520px;
   overflow: auto;
+  font-size: 15px;
 }
 
 .ai-text p,
 .ai-text ul {
   margin: 0;
   color: #3b4844;
-  line-height: 1.7;
+  line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -625,6 +635,8 @@ small {
 }
 
 .module-card strong {
+  font-size: 17px;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
@@ -674,7 +686,7 @@ small {
 }
 
 .plan-preview h2 {
-  font-size: 28px;
+  font-size: 22px;
 }
 
 .empty-slot {

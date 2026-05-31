@@ -15,7 +15,7 @@ import type {
   WeakPoint
 } from "./types";
 
-type ProjectTab = "overview" | "materials" | "plan" | "planResult" | "review";
+type ProjectTab = "overview" | "materials" | "plan" | "result" | "review";
 type ModuleStatus = "todo" | "doing" | "done";
 type ModulePriority = "low" | "medium" | "high";
 type UploadQueueItem = {
@@ -126,12 +126,16 @@ function materialKindLabel(material: StudyMaterial) {
 
 function stripMarkdown(text: string) {
   return text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
     .replace(/```[\s\S]*?```/g, (block) => block.replace(/```/g, ""))
     .replace(/^#{1,6}\s+/gm, "")
     .replace(/(\*\*|__)(.*?)\1/g, "$2")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/^\s{0,3}>\s?/gm, "")
     .replace(/^\s*[-*]\s+/gm, "• ")
+    .replace(/[*_~#]+/g, "")
     .replace(/\|/g, " ")
     .trim();
 }
@@ -148,7 +152,7 @@ function compactTitle(raw: string, fallback: string) {
     .trim();
   const firstPart = cleaned.split(/[：:。；;，,\n（(]/)[0]?.trim();
   const title = (firstPart || cleaned || fallback).replace(/\s+/g, " ");
-  return title.length > 28 ? `${title.slice(0, 28)}...` : title;
+  return title.length > 18 ? `${title.slice(0, 18)}...` : title;
 }
 
 function renderHumanText(text: string) {
@@ -192,14 +196,44 @@ function parsePriority(line: string): ModulePriority {
   return "medium";
 }
 
+function extractModuleTitle(line: string) {
+  const cleaned = stripMarkdown(line)
+    .replace(/预计(学习)?时间\s*[:：]?\s*\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
+    .replace(/\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
+    .replace(/^(第\s*\d+\s*(天|章|页)\s*)+/g, "")
+    .trim();
+  const explicit = cleaned.match(/(?:模块名称|知识点名称|模块名|知识点|考点|主题)\s*[:：]\s*([^，。；;\n｜|]+?)(?:\s+预计|$|[，。；;\n｜|])/i);
+  const pipeFirst = cleaned.split(/[｜|]/)[0]?.trim();
+  const candidate = (explicit?.[1] || pipeFirst || cleaned)
+    .replace(/^(模块|知识点|考点)\s*\d*\s*[:：]?\s*/i, "")
+    .replace(/^(名称|标题)\s*[:：]?\s*/i, "")
+    .replace(/\s+/g, "");
+  if (!candidate) return "";
+  if (candidate.length < 2 || candidate.length > 16) return "";
+  if (/第\s*\d+\s*(天|章|页)|每天|天数|高频|聚焦|高效|综合|复习|练习|任务|计划|安排|资料|时间|完成|根据|模块$/.test(candidate)) return "";
+  return candidate;
+}
+
+function displayModuleTitle(title: string) {
+  const cleaned = stripMarkdown(title).replace(/\s+/g, "");
+  if (!extractModuleTitle(cleaned)) return "待重新拆分";
+  return compactTitle(cleaned, "知识点");
+}
+
 function parseModulesFromPlan(content: string, projectId: string, noteId: string, existingCount: number): StudyTask[] {
   const rawLines = content
     .split(/\n+/)
-    .map((line) => line.replace(/^[\s\-*•\d.、)]+/, "").trim())
-    .filter((line) => line.length >= 6);
-  const candidateLines = rawLines.filter((line) => /模块|知识点|优先级|预计|分钟|小时|练习/.test(line)).slice(0, 24);
-  const lines = candidateLines.length ? candidateLines : rawLines.slice(0, 18);
-  return lines.map((line, index) => {
+    .map((line) => stripMarkdown(line).replace(/^[\s\-*•\d.、)]+/, "").trim())
+    .filter((line) => line.length >= 2);
+  const candidateLines = rawLines
+    .filter((line) => /模块名称|知识点名称|模块名|知识点|考点|主题|预计|分钟|小时/.test(line))
+    .slice(0, 36);
+  const lines = candidateLines.length ? candidateLines : rawLines.slice(0, 24);
+  const seen = new Set<string>();
+  return lines.flatMap((line, index) => {
+    const title = extractModuleTitle(line);
+    if (!title || seen.has(title)) return [];
+    seen.add(title);
     const minutesMatch = line.match(/(\d+)\s*(分钟|min)/i);
     const hourMatch = line.match(/(\d+(?:\.\d+)?)\s*(小时|h)/i);
     const estimatedMinutes = minutesMatch
@@ -207,8 +241,7 @@ function parseModulesFromPlan(content: string, projectId: string, noteId: string
       : hourMatch
         ? normalizeMinutes(Number(hourMatch[1]) * 60)
         : 45;
-    const title = compactTitle(line, `知识模块 ${index + 1}`);
-    return {
+    return [{
       id: createId("module"),
       project_id: projectId,
       title,
@@ -222,7 +255,7 @@ function parseModulesFromPlan(content: string, projectId: string, noteId: string
       note: line,
       created_at: nowIso(),
       updated_at: nowIso()
-    };
+    }];
   });
 }
 
@@ -251,7 +284,7 @@ export default function App() {
   const [mockDraft, setMockDraft] = useState(emptyMock);
   const [draggingModuleId, setDraggingModuleId] = useState("");
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
-  const [planPreview, setPlanPreview] = useState<AiNote | null>(null);
+  const [resultNote, setResultNote] = useState<AiNote | null>(null);
   const [status, setStatus] = useState("准备好了。");
   const [busyLabel, setBusyLabel] = useState("");
 
@@ -569,13 +602,9 @@ export default function App() {
         created_at: nowIso()
       };
       await storage.saveNote(note);
-      if (mode === "plan") {
-        setPlanPreview(note);
-        setActiveTab("planResult");
-        setStatus("计划已生成。先看一眼，确认后再拆成知识模块卡片。");
-      } else {
-        setStatus(`${title} 已生成。`);
-      }
+      setResultNote(note);
+      setActiveTab("result");
+      setStatus(`${title} 已生成，已经打开结果页。`);
       await refresh();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "AI 请求失败。");
@@ -587,7 +616,7 @@ export default function App() {
   async function createModulesFromPlan(note: AiNote) {
     if (!activeProject) return;
     const parsed = parseModulesFromPlan(note.content, activeProject.id, note.id, scopedModules.length);
-    if (!parsed.length) return setStatus("这份计划没拆出明确知识模块，可以手动新增模块。");
+    if (!parsed.length) return setStatus("这份计划没拆出进程、线程这类明确知识点名，可以重新生成或手动新增模块。");
     const ok = window.confirm(`我拆出了 ${parsed.length} 个知识模块，要加入计划看板吗？`);
     if (!ok) return;
     await Promise.all(parsed.map(storage.saveTask));
@@ -809,7 +838,7 @@ export default function App() {
               onClick={() => {
                 setActiveProjectId(project.id);
                 setActiveTab("overview");
-                setPlanPreview(null);
+                setResultNote(null);
               }}
             >
               <span>{project.subject}</span>
@@ -855,7 +884,7 @@ export default function App() {
             </div>
             <div className="panel metric-panel">
               <span>当前重点</span>
-              <strong>{scopedModules.find((item) => moduleStatus(item) !== "done")?.title || "暂无"}</strong>
+              <strong className="focus-text">{scopedModules.find((item) => moduleStatus(item) !== "done") ? displayModuleTitle(scopedModules.find((item) => moduleStatus(item) !== "done")!.title) : "暂无"}</strong>
               <small>去计划页拖动顺序或标记完成。</small>
             </div>
             <div className="panel metric-panel">
@@ -901,14 +930,11 @@ export default function App() {
               <h2>资料库</h2>
               <div className="list">
                 {scopedMaterials.map((item) => (
-                  <article key={item.id} className="item">
+                  <article key={item.id} className="item material-row">
                     <div className="item-head">
                       <strong>{item.title}</strong>
                       <button className="mini danger" onClick={() => deleteMaterial(item)}>删除</button>
                     </div>
-                    <span className={`kind-badge ${item.kind}`}>{materialKindLabel(item)}</span>
-                    <p>{previewText(item.content) || "暂无文本"}</p>
-                    {item.warnings?.map((warning) => <small key={warning}>{warning}</small>)}
                   </article>
                 ))}
                 {!scopedMaterials.length && <p className="muted">还没有资料。</p>}
@@ -963,7 +989,7 @@ export default function App() {
                           moveModule(column.status, item.id);
                         }}
                       >
-                        <strong>{compactTitle(item.title, "知识模块")}</strong>
+                        <strong>{displayModuleTitle(item.title)}</strong>
                         <div className="module-meta">
                           <span>{item.estimated_minutes} 分钟</span>
                         </div>
@@ -976,42 +1002,27 @@ export default function App() {
               })}
             </div>
 
-            <div className="panel">
-              <h2>AI 结果</h2>
-              <div className="list">
-                {scopedNotes.map((note) => (
-                  <article key={note.id} className="item note">
-                    <strong>{note.title}</strong>
-                    {renderHumanText(note.content)}
-                    <div className="actions wrap">
-                      {note.mode === "plan" && <button className="secondary" onClick={() => createModulesFromPlan(note)}>拆成知识模块</button>}
-                      {note.mode === "practice" && <button className="secondary" onClick={() => {
-                        setMistakeDraft({ question: note.content.slice(0, 220), reason: "从练习反馈保存", fix: "按 AI 解析复盘" });
-                        setActiveTab("review");
-                        setStatus("已把练习反馈放到错题草稿，可以改完保存。");
-                      }}>放进错题草稿</button>}
-                      {note.mode === "mock" && <button className="secondary" onClick={() => {
-                        setMockDraft({ title: note.title, score: "", duration_minutes: 30, feedback: note.content.slice(0, 420) });
-                        setActiveTab("review");
-                        setStatus("已把模考反馈放到记录草稿，补个分数就能保存。");
-                      }}>放进模考记录</button>}
-                    </div>
-                  </article>
-                ))}
-                {!scopedNotes.length && <p className="muted">AI 生成的计划、讲解、练习会出现在这里。</p>}
-              </div>
-            </div>
           </section>
         )}
 
-        {activeTab === "planResult" && (
+        {activeTab === "result" && (
           <section className="app-section">
             <div className="panel plan-preview">
               <span className="kind-badge">AI 生成结果</span>
-              <h2>{planPreview?.title || "知识模块计划"}</h2>
-              {renderHumanText(planPreview?.content || scopedNotes.find((note) => note.mode === "plan")?.content || "")}
+              <h2>{resultNote?.title || "AI 结果"}</h2>
+              {renderHumanText(resultNote?.content || scopedNotes[0]?.content || "")}
               <div className="actions wrap">
-                <button onClick={() => planPreview && createModulesFromPlan(planPreview)} disabled={!planPreview}>确认，拆成模块卡片</button>
+                {resultNote?.mode === "plan" && <button onClick={() => createModulesFromPlan(resultNote)}>确认，拆成模块卡片</button>}
+                {resultNote?.mode === "practice" && <button onClick={() => {
+                  setMistakeDraft({ question: resultNote.content.slice(0, 220), reason: "从练习反馈保存", fix: "按 AI 解析复盘" });
+                  setActiveTab("review");
+                  setStatus("已把练习反馈放到错题草稿，可以改完保存。");
+                }}>放进错题草稿</button>}
+                {resultNote?.mode === "mock" && <button onClick={() => {
+                  setMockDraft({ title: resultNote.title, score: "", duration_minutes: 30, feedback: resultNote.content.slice(0, 420) });
+                  setActiveTab("review");
+                  setStatus("已把模考反馈放到记录草稿，补个分数就能保存。");
+                }}>放进模考记录</button>}
                 <button className="secondary" onClick={() => setActiveTab("plan")}>回到计划页调整</button>
                 <button className="secondary" onClick={() => setActiveTab("materials")}>继续补资料</button>
               </div>
