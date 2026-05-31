@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { importVideo, recognizeHandwriting, runAi, testApiConfig } from "./api";
-import { documentPlaceholder, downloadText, readAsDataUrl, readPdfForAi, readPdfText, readTextFile } from "./fileReaders";
+import { documentPlaceholder, downloadText, readAsDataUrl, readPdfText, readTextFile } from "./fileReaders";
 import { createId, storage } from "./storage";
 import type {
   AiNote,
@@ -482,29 +482,6 @@ export default function App() {
     await refresh();
   }
 
-  async function recognizePdfPages(fileName: string, pageImages: string[]) {
-    if (!pageImages.length) return { text: "", warnings: [] };
-    if (!apiConfig.api_key.trim() || !apiConfig.base_url.trim() || !apiConfig.model.trim()) {
-      return {
-        text: "",
-        warnings: ["未进行页面视觉识别。填写完整 AI 配置后重新上传，可以识别截图、图表、扫描页等内容。"]
-      };
-    }
-    const chunks: string[] = [];
-    const warnings: string[] = [];
-    for (let start = 0; start < pageImages.length; start += 4) {
-      const chunk = pageImages.slice(start, start + 4);
-      const end = Math.min(start + chunk.length, pageImages.length);
-      try {
-        chunks.push(await recognizeHandwriting(apiConfig, chunk, `${fileName} 第 ${start + 1}-${end} 页，请识别课件页面里的文字、表格、图示、公式和截图重点。`));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "页面视觉识别失败";
-        warnings.push(`第 ${start + 1}-${end} 页视觉识别失败：${message}`);
-      }
-    }
-    return { text: chunks.join("\n\n"), warnings };
-  }
-
   async function handleFiles(files: FileList | null) {
     if (!requireProject()) return;
     if (!files?.length) return setStatus("先选择要上传的课件或教材。");
@@ -534,15 +511,10 @@ export default function App() {
           let content = "";
           const warnings: string[] = [];
           if (kind === "pdf") {
-            updateUploadItem(queueId, { state: "reading", message: "正在读取文字层和页面" });
-            const pdf = await readPdfForAi(file);
-            updateUploadItem(queueId, { state: "vision", message: "正在识别页面图表和扫描内容" });
-            const visual = await recognizePdfPages(file.name, pdf.pageImages);
-            content = [
-              `PDF 文字层\n${pdf.text || "没有提取到文字层。"}`,
-              visual.text && `页面视觉识别\n${visual.text}`
-            ].filter(Boolean).join("\n\n");
-            warnings.push(...visual.warnings);
+            updateUploadItem(queueId, { state: "reading", message: "正在快速读取 PDF 文字层" });
+            const text = await readPdfText(file);
+            content = `PDF 文字层\n${text || "没有提取到文字层。扫描版 PDF 可以后续补充手动重点。"}`;
+            warnings.push("已快速导入 PDF 文字层；扫描图片、图表和公式识别会放到后续单独处理。");
           } else {
             content = kind === "document" ? documentPlaceholder(file) : await readTextFile(file);
           }
@@ -557,7 +529,7 @@ export default function App() {
             created_at: nowIso()
           });
           successCount += 1;
-          updateUploadItem(queueId, { state: "done", message: warnings.length ? "已导入文字层，部分页面识别失败" : "已导入资料库" });
+          updateUploadItem(queueId, { state: "done", message: kind === "pdf" ? "已快速导入 PDF 文字层" : "已导入资料库" });
         } catch (error) {
           updateUploadItem(queueId, { state: "failed", message: error instanceof Error ? error.message : "导入失败" });
         }
@@ -955,7 +927,7 @@ export default function App() {
             <div className="panel">
               <h2>资料导入</h2>
               <label className="file primary-upload">批量上传课件 / 教材（PDF / DOC / DOCX）<input type="file" accept=".pdf,.doc,.docx,.odt,.rtf,.txt,.md,.markdown,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" multiple onChange={(event) => handleFiles(event.target.files)} /></label>
-              <p className="hint">PDF 会先读文字层，再把每页画面交给 AI 识别图表、截图、扫描页和公式。没有 API Key 时也能先导入文字层，之后可以补 Key 重新上传。</p>
+              <p className="hint">默认会快速读取 PDF 文字层，先把资料放进库里。扫描页、图表和公式这类慢识别，后面单独处理，避免上传时卡太久。</p>
               {!!uploadQueue.length && (
                 <div className="upload-queue">
                   {uploadQueue.map((item) => (
