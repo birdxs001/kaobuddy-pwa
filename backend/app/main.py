@@ -142,7 +142,7 @@ async def practice(request: PracticeRequest) -> AiResponse:
     return await _run_ai(
         enriched,
         PRACTICE_SYSTEM_PROMPT,
-        "请生成或批改一组练习题，给出答案、解析、薄弱项和下一步建议。",
+        "请生成一套模拟卷，给出题目、分值、建议用时、答案区、参考答案、解析和薄弱项提醒。",
     )
 
 

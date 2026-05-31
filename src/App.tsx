@@ -378,7 +378,7 @@ export default function App() {
   const resultEntries = [
     { label: "查看计划结果", note: latestPlanNote },
     { label: "查看讲解结果", note: latestTeachNote },
-    { label: "查看练习结果", note: latestPracticeNote },
+    { label: "查看模拟卷", note: latestPracticeNote },
     { label: "查看模考结果", note: latestMockNote }
   ].filter((item): item is { label: string; note: AiNote } => Boolean(item.note));
   const currentResultNote = resultNote || scopedNotes[0] || null;
@@ -483,17 +483,26 @@ export default function App() {
   }
 
   async function recognizePdfPages(fileName: string, pageImages: string[]) {
-    if (!pageImages.length) return "";
+    if (!pageImages.length) return { text: "", warnings: [] };
     if (!apiConfig.api_key.trim() || !apiConfig.base_url.trim() || !apiConfig.model.trim()) {
-      return "页面视觉识别没有运行。先填完整 AI 配置后，PDF 里的截图、表格、流程图和扫描内容才能交给 AI 一起识别。";
+      return {
+        text: "",
+        warnings: ["未进行页面视觉识别。填写完整 AI 配置后重新上传，可以识别截图、图表、扫描页等内容。"]
+      };
     }
     const chunks: string[] = [];
+    const warnings: string[] = [];
     for (let start = 0; start < pageImages.length; start += 4) {
       const chunk = pageImages.slice(start, start + 4);
       const end = Math.min(start + chunk.length, pageImages.length);
-      chunks.push(await recognizeHandwriting(apiConfig, chunk, `${fileName} 第 ${start + 1}-${end} 页，请识别课件页面里的文字、表格、图示、公式和截图重点。`));
+      try {
+        chunks.push(await recognizeHandwriting(apiConfig, chunk, `${fileName} 第 ${start + 1}-${end} 页，请识别课件页面里的文字、表格、图示、公式和截图重点。`));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "页面视觉识别失败";
+        warnings.push(`第 ${start + 1}-${end} 页视觉识别失败：${message}`);
+      }
     }
-    return chunks.join("\n\n");
+    return { text: chunks.join("\n\n"), warnings };
   }
 
   async function handleFiles(files: FileList | null) {
@@ -528,12 +537,12 @@ export default function App() {
             updateUploadItem(queueId, { state: "reading", message: "正在读取文字层和页面" });
             const pdf = await readPdfForAi(file);
             updateUploadItem(queueId, { state: "vision", message: "正在识别页面图表和扫描内容" });
-            const visualText = await recognizePdfPages(file.name, pdf.pageImages);
+            const visual = await recognizePdfPages(file.name, pdf.pageImages);
             content = [
               `PDF 文字层\n${pdf.text || "没有提取到文字层。"}`,
-              visualText && `页面视觉识别\n${visualText}`
+              visual.text && `页面视觉识别\n${visual.text}`
             ].filter(Boolean).join("\n\n");
-            if (!apiConfig.api_key.trim() || !apiConfig.base_url.trim() || !apiConfig.model.trim()) warnings.push("未进行页面视觉识别。填写完整 AI 配置后重新上传，可以识别截图、图表、扫描页等内容。");
+            warnings.push(...visual.warnings);
           } else {
             content = kind === "document" ? documentPlaceholder(file) : await readTextFile(file);
           }
@@ -548,7 +557,7 @@ export default function App() {
             created_at: nowIso()
           });
           successCount += 1;
-          updateUploadItem(queueId, { state: "done", message: "已导入资料库" });
+          updateUploadItem(queueId, { state: "done", message: warnings.length ? "已导入文字层，部分页面识别失败" : "已导入资料库" });
         } catch (error) {
           updateUploadItem(queueId, { state: "failed", message: error instanceof Error ? error.message : "导入失败" });
         }
@@ -990,7 +999,7 @@ export default function App() {
               <div className="actions wrap">
                 <button onClick={() => runMode("plan", "知识模块计划")} disabled={busy}>生成计划</button>
                 <button className="secondary" onClick={() => runMode("teach", "考点讲解")} disabled={busy}>生成讲解</button>
-                <button className="secondary" onClick={() => runMode("practice", "练习反馈")} disabled={busy}>生成/批改练习</button>
+                <button className="secondary" onClick={() => runMode("practice", "模拟卷")} disabled={busy}>生成模拟卷</button>
                 <button className="secondary" onClick={() => runMode("mock-exam", "短模考")} disabled={busy}>生成模考</button>
               </div>
               {!!resultEntries.length && (
@@ -1069,9 +1078,9 @@ export default function App() {
               <div className="actions wrap">
                 {currentResultNote?.mode === "plan" && <button onClick={() => createModulesFromPlan(currentResultNote)}>确认，拆成模块卡片</button>}
                 {currentResultNote?.mode === "practice" && <button onClick={() => {
-                  setMistakeDraft({ question: currentResultNote.content.slice(0, 220), reason: "从练习反馈保存", fix: "按 AI 解析复盘" });
+                  setMistakeDraft({ question: currentResultNote.content.slice(0, 220), reason: "从模拟卷保存", fix: "按 AI 解析复盘" });
                   setActiveTab("review");
-                  setStatus("已把练习反馈放到错题草稿，可以改完保存。");
+                  setStatus("已把模拟卷放到错题草稿，可以改完保存。");
                 }}>放进错题草稿</button>}
                 {currentResultNote?.mode === "mock" && <button onClick={() => {
                   setMockDraft({ title: currentResultNote.title, score: "", duration_minutes: 30, feedback: currentResultNote.content.slice(0, 420) });
