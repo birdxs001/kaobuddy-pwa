@@ -164,10 +164,15 @@ function stripMarkdown(text: string) {
     .replace(/(\*\*|__)(.*?)\1/g, "$2")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/^\s{0,3}>\s?/gm, "")
+    .replace(/^\s*[-—–_]{3,}\s*$/gm, "")
     .replace(/^\s*[-*]\s+/gm, "• ")
     .replace(/[*_~#]+/g, "")
     .replace(/\|/g, " ")
     .trim();
+}
+
+function isDividerLine(text: string) {
+  return /^[-—–_]{3,}$/.test(text.trim());
 }
 
 function previewText(text: string, max = 220) {
@@ -226,7 +231,10 @@ function humanReadableAiText(text: string) {
 }
 
 function renderHumanText(text: string) {
-  const blocks = humanReadableAiText(text).split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  const blocks = humanReadableAiText(text)
+    .split(/\n{2,}/)
+    .map((block) => block.split(/\n/).map((line) => line.trim()).filter((line) => line && !isDividerLine(line)).join("\n").trim())
+    .filter(Boolean);
   if (!blocks.length) return <p className="muted">暂无内容。</p>;
   return (
     <div className="ai-text">
