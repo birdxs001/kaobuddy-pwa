@@ -59,6 +59,7 @@ export type StudyTask = {
   exam_points?: string;
   explanation?: string;
   practice_questions?: string;
+  memorization?: string;
   completed_at?: string;
   order?: number;
   source_note_id?: string;

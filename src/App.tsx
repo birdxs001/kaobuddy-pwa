@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { importVideo, recognizeHandwriting, runAi, runModulePractice, testApiConfig } from "./api";
-import { documentPlaceholder, readAsDataUrl, readPdfText, readTextFile } from "./fileReaders";
+import { importVideo, recognizeHandwriting, runAi, runMemorize, runModulePractice, testApiConfig } from "./api";
+import { readAsDataUrl, readDocumentText, readPdfText, readTextFile } from "./fileReaders";
+import { exportMockExamPdf } from "./pdfExport";
 import { createId, storage } from "./storage";
 import type {
   AiNote,
@@ -71,7 +72,7 @@ const emptyWeakPoint: Pick<WeakPoint, "title" | "evidence" | "severity"> = {
 };
 
 const moduleColumns: { status: ModuleStatus; title: string; hint: string }[] = [
-  { status: "todo", title: "待学习", hint: "还没开始的知识点" },
+  { status: "todo", title: "待学习", hint: "按照重要程度排序" },
   { status: "doing", title: "学习中", hint: "正在学的内容" },
   { status: "done", title: "已学习", hint: "已经学完的模块" }
 ];
@@ -81,7 +82,7 @@ const visibleTabs: { tab: ProjectTab; label: string }[] = [
   { tab: "materials", label: "资料" },
   { tab: "plan", label: "计划" },
   { tab: "mock", label: "模拟考" },
-  { tab: "review", label: "复盘" }
+  { tab: "review", label: "临考速背" }
 ];
 
 const setupSteps: { step: SetupStep; label: string }[] = [
@@ -552,8 +553,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ProjectTab>("overview");
   const [projectDraft, setProjectDraft] = useState(emptyProject);
   const [showNewProject, setShowNewProject] = useState(false);
-  const [manualTitle, setManualTitle] = useState("");
-  const [manualText, setManualText] = useState("");
+  const [editingProjectId, setEditingProjectId] = useState("");
   const [videoUrl, setVideoUrl] = useState("");
   const [handwritingHint, setHandwritingHint] = useState("");
   const [extra, setExtra] = useState("");
@@ -561,8 +561,14 @@ export default function App() {
   const [mistakeDraft, setMistakeDraft] = useState(emptyMistake);
   const [weakPointDraft, setWeakPointDraft] = useState(emptyWeakPoint);
   const [mockQuestionTypes, setMockQuestionTypes] = useState("");
+  const [mockDuration, setMockDuration] = useState<number>(0);
+  const [editingMockId, setEditingMockId] = useState("");
   const [draggingModuleId, setDraggingModuleId] = useState("");
   const [selectedModuleId, setSelectedModuleId] = useState("");
+  const [memorizeModuleId, setMemorizeModuleId] = useState("");
+  const [dismissedIds, setDismissedIds] = useState<string[]>([]);
+  const [lastDismissedId, setLastDismissedId] = useState("");
+  const [dismissingId, setDismissingId] = useState("");
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [resultNote, setResultNote] = useState<AiNote | null>(null);
   const [status, setStatus] = useState("准备好了。");
@@ -634,7 +640,6 @@ export default function App() {
     ? scopedModules.find((item) => item.id === selectedModuleId) || null
     : null;
   const latestPlanNote = scopedNotes.find((note) => note.mode === "plan");
-  const latestMockNote = scopedNotes.find((note) => note.mode === "mock");
   const currentResultNote = resultNote || scopedNotes[0] || null;
   const statusMessage = busy ? busyLabel : status;
   const statusClass = `status ${busy ? "loading" : statusTone(statusMessage)}`;
@@ -723,7 +728,8 @@ export default function App() {
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
-    if (!projects.length && !apiConfig.api_key.trim()) {
+    const editingProject = projects.find((project) => project.id === editingProjectId);
+    if (!editingProject && !projects.length && !apiConfig.api_key.trim()) {
       setSetupStep("api");
       return setStatus("先填 API Key，再创建第一个项目。");
     }
@@ -731,39 +737,56 @@ export default function App() {
     if (!projectDraft.exam_date) return setStatus("考试日期也要填，不然我没法算倒计时。");
     const timestamp = nowIso();
     const project: StudyProject = {
-      id: createId("project"),
+      id: editingProject?.id || createId("project"),
       ...projectDraft,
       subject: projectDraft.subject.trim(),
       daily_minutes: normalizeMinutes(projectDraft.daily_minutes),
       target_score: projectDraft.target_score.trim(),
       weak_points: projectDraft.weak_points.trim(),
-      created_at: timestamp,
+      created_at: editingProject?.created_at || timestamp,
       updated_at: timestamp
     };
     await storage.saveProject(project);
     setProjectDraft(emptyProject);
+    setEditingProjectId("");
     setActiveProjectId(project.id);
     setActiveTab("overview");
     setShowNewProject(false);
     setShowSetup(false);
-    setStatus("考试项目已创建。");
+    setStatus(editingProject ? "项目基本信息已更新。" : "考试项目已创建。");
     await refresh();
   }
 
-  async function addManualMaterial(kind: MaterialKind = "text") {
-    if (!requireProject()) return;
-    if (!manualText.trim()) return setStatus("先粘贴一点资料内容。");
-    await storage.saveMaterial({
-      id: createId("material"),
-      project_id: activeProject!.id,
-      title: manualTitle.trim() || "手动资料",
-      kind,
-      content: manualText.trim(),
-      created_at: nowIso()
+  function editProject(project: StudyProject) {
+    setEditingProjectId(project.id);
+    setProjectDraft({
+      subject: project.subject,
+      exam_date: project.exam_date,
+      daily_minutes: project.daily_minutes,
+      target_score: project.target_score || "",
+      weak_points: project.weak_points || ""
     });
-    setManualTitle("");
-    setManualText("");
-    setStatus("资料已入库。");
+    setShowNewProject(true);
+    setStatus("可以重新填写这个项目的基本信息。");
+  }
+
+  async function deleteProject(project: StudyProject) {
+    const ok = window.confirm(`删除「${project.subject}」吗？这个项目里的资料、计划、模拟考和复盘记录也会一起删除。`);
+    if (!ok) return;
+    await storage.deleteProject(project.id);
+    if (activeProjectId === project.id) {
+      const nextProject = projects.find((item) => item.id !== project.id);
+      setActiveProjectId(nextProject?.id || "");
+      setActiveTab("overview");
+      setSelectedModuleId("");
+      setResultNote(null);
+    }
+    if (editingProjectId === project.id) {
+      setEditingProjectId("");
+      setProjectDraft(emptyProject);
+      setShowNewProject(false);
+    }
+    setStatus("项目已删除。");
     await refresh();
   }
 
@@ -801,7 +824,12 @@ export default function App() {
             content = `PDF 文字层\n${text || "没有提取到文字层。扫描版 PDF 可以后续补充手动重点。"}`;
             warnings.push("已快速导入 PDF 文字层；扫描图片、图表和公式识别会放到后续单独处理。");
           } else {
-            content = kind === "document" ? documentPlaceholder(file) : await readTextFile(file);
+            if (kind === "document") {
+              updateUploadItem(queueId, { state: "reading", message: "正在读取文档正文" });
+              content = await readDocumentText(file);
+            } else {
+              content = await readTextFile(file);
+            }
           }
           await storage.saveMaterial({
             id: createId("material"),
@@ -814,7 +842,7 @@ export default function App() {
             created_at: nowIso()
           });
           successCount += 1;
-          updateUploadItem(queueId, { state: "done", message: kind === "pdf" ? "已快速导入 PDF 文字层" : "已导入资料库" });
+          updateUploadItem(queueId, { state: "done", message: kind === "pdf" ? "已快速导入 PDF 文字层" : kind === "document" ? "已导入文档正文" : "已导入资料库" });
         } catch (error) {
           updateUploadItem(queueId, { state: "failed", message: error instanceof Error ? error.message : "导入失败" });
         }
@@ -911,13 +939,15 @@ export default function App() {
       };
       await storage.saveNote(note);
       if (mode === "mock-exam") {
+        const durationMatch = (extraOverride || extra || "").match(/考试时长[：:]?\s*(\d+)/);
+        const durationMinutes = durationMatch ? Number(durationMatch[1]) : 30;
         await storage.saveMockAttempt({
           id: createId("mock"),
           project_id: activeProject!.id,
-          title: `${title} ${new Date().toLocaleDateString("zh-CN")}`,
-          score: "待完成",
-          duration_minutes: 30,
-          feedback: stripMarkdown(content).slice(0, 420),
+          title: `模拟考 ${new Date().toLocaleDateString("zh-CN")} ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`,
+          score: "",
+          duration_minutes: durationMinutes,
+          feedback: "",
           source_note_id: note.id,
           created_at: nowIso()
         });
@@ -1087,6 +1117,42 @@ export default function App() {
     }
   }
 
+  async function generateMemorizationContent(module: StudyTask) {
+    if (!requireProject() || !requireApi()) return;
+    const moduleTitle = displayModuleTitle(module.title, module.note);
+    setBusyLabel(`正在生成「${moduleTitle}」的速背内容...`);
+    try {
+      const content = await runMemorize({
+        api_config: apiConfig,
+        project: toProjectPayload(activeProject!),
+        materials: scopedMaterials.map(({ title, kind, content }) => ({ title, kind, content })),
+        extra: [
+          `当前知识点：${moduleTitle}`,
+          `考察内容：${module.exam_points || module.note || "请根据资料判断。"}`
+        ].join("\n")
+      });
+      await storage.saveTask({
+        ...module,
+        memorization: stripMarkdown(content),
+        updated_at: nowIso()
+      });
+      setMemorizeModuleId(module.id);
+      setStatus("速背内容已生成。");
+      await refresh();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "速背内容生成失败。");
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function renameMock(mockId: string, newTitle: string) {
+    const mock = scopedMocks.find((m) => m.id === mockId);
+    if (!mock || !newTitle.trim()) return;
+    await storage.saveMockAttempt({ ...mock, title: newTitle.trim() });
+    await refresh();
+  }
+
   async function saveMistake(event: FormEvent) {
     event.preventDefault();
     if (!requireProject()) return;
@@ -1155,12 +1221,27 @@ export default function App() {
 
   const projectForm = (
     <form className="panel project-form" onSubmit={createProject}>
-      <h2>{projects.length ? "新建项目" : "创建第一个项目"}</h2>
+      <h2>{editingProjectId ? "编辑项目信息" : projects.length ? "新建项目" : "创建第一个项目"}</h2>
       <label>科目<input value={projectDraft.subject} onChange={(event) => setProjectDraft({ ...projectDraft, subject: event.target.value })} placeholder="比如 高数 / 法考 / 期末英语" /></label>
       <label>考试日期<input type="date" value={projectDraft.exam_date} onChange={(event) => setProjectDraft({ ...projectDraft, exam_date: event.target.value })} /></label>
       <label>目标分数<input value={projectDraft.target_score} onChange={(event) => setProjectDraft({ ...projectDraft, target_score: event.target.value })} placeholder="可不填" /></label>
       <label>薄弱项<textarea value={projectDraft.weak_points} onChange={(event) => setProjectDraft({ ...projectDraft, weak_points: event.target.value })} placeholder="可不填，后面可以让 AI 推断" /></label>
-      <button type="submit">{projects.length ? "保存项目" : "进入考搭子"}</button>
+      <div className="actions wrap">
+        <button type="submit">{editingProjectId ? "保存修改" : projects.length ? "保存项目" : "进入考搭子"}</button>
+        {editingProjectId && (
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setEditingProjectId("");
+              setProjectDraft(emptyProject);
+              setShowNewProject(false);
+            }}
+          >
+            取消
+          </button>
+        )}
+      </div>
     </form>
   );
 
@@ -1264,7 +1345,16 @@ export default function App() {
           <strong>考搭子</strong>
           <span>KaoBuddy</span>
         </div>
-        <button className="secondary" onClick={() => setShowNewProject((value) => !value)}>{showNewProject ? "收起新建" : "新建项目"}</button>
+        <button
+          className="secondary"
+          onClick={() => {
+            setEditingProjectId("");
+            setProjectDraft(emptyProject);
+            setShowNewProject((value) => !value);
+          }}
+        >
+          {showNewProject && !editingProjectId ? "收起新建" : "新建项目"}
+        </button>
         <button
           className="secondary"
           onClick={() => {
@@ -1279,19 +1369,27 @@ export default function App() {
         {showNewProject && <div className="sidebar-form">{projectForm}</div>}
         <div className="project-list">
           {projects.map((project) => (
-            <button
+            <article
               key={project.id}
               className={project.id === activeProject?.id ? "project-card active" : "project-card"}
-              onClick={() => {
-                setActiveProjectId(project.id);
-                setActiveTab("overview");
-                setResultNote(null);
-                setSelectedModuleId("");
-              }}
             >
-              <span>{project.subject}</span>
-              <small>倒计时 {daysLeft(project.exam_date)} 天 · {projectProgress(project.id)}%</small>
-            </button>
+              <button
+                className="project-open"
+                onClick={() => {
+                  setActiveProjectId(project.id);
+                  setActiveTab("overview");
+                  setResultNote(null);
+                  setSelectedModuleId("");
+                }}
+              >
+                <span>{project.subject}</span>
+                <small>倒计时 {daysLeft(project.exam_date)} 天 · {projectProgress(project.id)}%</small>
+              </button>
+              <div className="project-actions">
+                <button className="mini secondary" onClick={() => editProject(project)}>编辑</button>
+                <button className="mini danger" onClick={() => deleteProject(project)}>删除</button>
+              </div>
+            </article>
           ))}
         </div>
       </aside>
@@ -1337,17 +1435,24 @@ export default function App() {
               <strong className="focus-text">{currentFocusModule ? displayModuleTitle(currentFocusModule.title, currentFocusModule.note) : "暂无"}</strong>
               <small>去计划页拖动顺序或标记完成。</small>
             </div>
-            <div className="panel metric-panel">
+            <div
+              className="panel metric-panel"
+              style={scopedMocks[0] ? { cursor: "pointer" } : undefined}
+              onClick={() => {
+                const latest = scopedMocks[0];
+                if (!latest) return;
+                const note = scopedNotes.find((n) => n.id === latest.source_note_id);
+                if (note) { setResultNote(note); setActiveTab("result"); }
+              }}
+            >
               <span>最近模考</span>
-              <strong>{scopedMocks[0]?.score || "暂无"}</strong>
-              <small>{scopedMocks[0]?.title || "模拟考页可以保存模考记录。"}</small>
+              <strong>{scopedMocks[0]?.title || "暂无"}</strong>
+              <small>{scopedMocks[0] ? `${scopedMocks[0].duration_minutes} 分钟 · 点击查看` : "模拟考页可以生成模考。"}</small>
             </div>
             <div className="panel wide">
-              <h2>薄弱项摘要</h2>
-              <div className="chips">
-                {scopedWeakPoints.map((item) => <span key={item.id} className={`pill ${item.severity}`}>{item.title}</span>)}
-                {!scopedWeakPoints.length && <p className="muted">还没有薄弱项，练习或模考后可以手动记录。</p>}
-              </div>
+              <p style={{ margin: 0, fontSize: "18px", color: "#28524f", lineHeight: 1.8, textAlign: "center", padding: "12px 0" }}>
+                考搭子陪你把知识点一"网"打尽，临时抱佛脚也要抱得有章法。
+              </p>
             </div>
           </section>
         )}
@@ -1368,9 +1473,6 @@ export default function App() {
                   ))}
                 </div>
               )}
-              <label>标题<input value={manualTitle} onChange={(event) => setManualTitle(event.target.value)} placeholder="课件、往年题、复习提纲..." /></label>
-              <label>补充文本<textarea value={manualText} onChange={(event) => setManualText(event.target.value)} placeholder="如果课件里有重点、老师画的范围，可以补充粘贴在这里" /></label>
-              <button onClick={() => addManualMaterial(manualText.includes("#") ? "markdown" : "text")} disabled={!activeProject}>保存补充文本</button>
               <label>手写笔记说明<input value={handwritingHint} onChange={(event) => setHandwritingHint(event.target.value)} placeholder="比如 第三章极限笔记" /></label>
               <label className="file">上传手写图片/PDF<input type="file" accept="image/*,.pdf" multiple onChange={(event) => handleHandwriting(event.target.files)} /></label>
               <label>B站等视频链接<input value={videoUrl} onChange={(event) => setVideoUrl(event.target.value)} placeholder="https://www.bilibili.com/video/..." /></label>
@@ -1476,36 +1578,80 @@ export default function App() {
           <section className="grid two app-section">
             <div className="panel">
               <h2>模拟考</h2>
+              <label>考试时长（分钟）
+                <input type="number" min={5} max={180} value={mockDuration || ""} placeholder="输入分钟数，如 30" onChange={(event) => setMockDuration(Number(event.target.value))} />
+              </label>
               <label>想生成什么题型<textarea value={mockQuestionTypes} onChange={(event) => setMockQuestionTypes(event.target.value)} placeholder="比如 选择题、简答题、计算题；不填就让 AI 自己安排。" /></label>
               <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 题量少一点，重点考进程和文件管理。" /></label>
               <div className="actions wrap">
                 <button
-                  onClick={() => runMode(
-                    "mock-exam",
-                    "模拟考",
-                    [mockQuestionTypes.trim() ? `题型要求：${mockQuestionTypes.trim()}` : "", extra.trim()].filter(Boolean).join("\n")
-                  )}
+                  onClick={() => {
+                    if (!mockDuration || mockDuration < 5) return setStatus("先填考试时长（至少 5 分钟）。");
+                    runMode(
+                      "mock-exam",
+                      "模拟考",
+                      [
+                        `考试时长：${mockDuration} 分钟`,
+                        mockQuestionTypes.trim() ? `题型要求：${mockQuestionTypes.trim()}` : "",
+                        extra.trim()
+                      ].filter(Boolean).join("；")
+                    );
+                  }}
                   disabled={busy}
                 >
                   生成模拟考
                 </button>
-                {latestMockNote && (
-                  <button
-                    className="secondary"
-                    onClick={() => {
-                      setResultNote(latestMockNote);
-                      setActiveTab("result");
-                    }}
-                  >
-                    查看模拟考结果
-                  </button>
-                )}
               </div>
             </div>
             <div className="panel">
               <h2>已生成的模拟考</h2>
               <div className="list compact">
-                {scopedMocks.map((item) => <article key={item.id} className="item"><strong>{item.title}</strong><small>{item.score} · {item.duration_minutes} 分钟</small><p>{item.feedback}</p></article>)}
+                {scopedMocks.map((item, index) => {
+                  const mockNote = scopedNotes.find((note) => note.id === item.source_note_id);
+                  const isEditing = editingMockId === item.id;
+                  return (
+                    <div key={item.id} className="item mock-record">
+                      <div className="mock-record-head">
+                        {isEditing ? (
+                          <input
+                            className="mock-rename-input"
+                            defaultValue={item.title}
+                            autoFocus
+                            onBlur={(event) => {
+                              renameMock(item.id, event.target.value);
+                              setEditingMockId("");
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                renameMock(item.id, event.currentTarget.value);
+                                setEditingMockId("");
+                              }
+                              if (event.key === "Escape") setEditingMockId("");
+                            }}
+                          />
+                        ) : (
+                          <strong
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setEditingMockId(item.id);
+                            }}
+                            title="点击重命名"
+                          >
+                            {item.title}
+                          </strong>
+                        )}
+                      </div>
+                      <div className="mock-record-body" onClick={() => {
+                        if (mockNote && !isEditing) {
+                          setResultNote(mockNote);
+                          setActiveTab("result");
+                        }
+                      }}>
+                        <small>{item.duration_minutes} 分钟 · {new Date(item.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>
+                      </div>
+                    </div>
+                  );
+                })}
                 {!scopedMocks.length && <p className="muted">生成模拟考后，这里会自动留下记录。</p>}
               </div>
             </div>
@@ -1586,45 +1732,130 @@ export default function App() {
                   {currentResultNote?.mode === "mock" ? "回到模拟考" : "回到计划页调整"}
                 </button>
                 <button className="secondary" onClick={() => setActiveTab("materials")}>继续补资料</button>
+                {currentResultNote?.mode === "mock" && (
+                  <button onClick={async () => {
+                    setBusyLabel("正在生成 PDF...");
+                    try {
+                      await exportMockExamPdf(currentResultNote.content, currentResultNote.title);
+                      setStatus("PDF 已下载。");
+                    } catch (error) {
+                      setStatus(error instanceof Error ? error.message : "PDF 生成失败。");
+                    } finally {
+                      setBusyLabel("");
+                    }
+                  }} disabled={busy}>下载 PDF</button>
+                )}
               </div>
             </div>
           </section>
         )}
 
-        {activeTab === "review" && (
-          <section className="grid two app-section">
+        {activeTab === "review" && !memorizeModuleId && (
+          <section className="app-section">
             <div className="panel">
-              <h2>错题复盘</h2>
-              <form className="stack" onSubmit={saveMistake}>
-                <textarea value={mistakeDraft.question} onChange={(event) => setMistakeDraft({ ...mistakeDraft, question: event.target.value })} placeholder="错题或题目摘要" />
-                <input value={mistakeDraft.reason} onChange={(event) => setMistakeDraft({ ...mistakeDraft, reason: event.target.value })} placeholder="错因" />
-                <input value={mistakeDraft.fix} onChange={(event) => setMistakeDraft({ ...mistakeDraft, fix: event.target.value })} placeholder="正确思路" />
-                <button type="submit">保存错题</button>
-              </form>
-              <div className="list compact">
-                {scopedMistakes.map((item) => <article key={item.id} className="item"><strong>{item.question}</strong><small>{item.reason}</small><p>{item.fix}</p></article>)}
-                {!scopedMistakes.length && <p className="muted">还没有错题。</p>}
-              </div>
+              <h2>临考速背</h2>
+              <p className="hint">按重要程度排列，背完一个「斩」一个。</p>
+              {(dismissedIds.length > 0 || lastDismissedId) && (
+                <div className="actions wrap">
+                  {lastDismissedId && (
+                    <button className="secondary" onClick={() => {
+                      setDismissedIds(dismissedIds.filter((id) => id !== lastDismissedId));
+                      setLastDismissedId("");
+                      setStatus("已撤销。");
+                    }}>撤销</button>
+                  )}
+                  {dismissedIds.length > 0 && (
+                    <button className="secondary" onClick={() => {
+                      setDismissedIds([]);
+                      setLastDismissedId("");
+                      setStatus("已重置，所有卡片恢复。");
+                    }}>重置</button>
+                  )}
+                </div>
+              )}
             </div>
-            <div className="panel">
-              <h2>薄弱项</h2>
-              <form className="stack" onSubmit={saveWeakPoint}>
-                <input value={weakPointDraft.title} onChange={(event) => setWeakPointDraft({ ...weakPointDraft, title: event.target.value })} placeholder="薄弱项，比如 极限运算" />
-                <input value={weakPointDraft.evidence} onChange={(event) => setWeakPointDraft({ ...weakPointDraft, evidence: event.target.value })} placeholder="证据，比如 模考第 3 题" />
-                <select value={weakPointDraft.severity} onChange={(event) => setWeakPointDraft({ ...weakPointDraft, severity: event.target.value as WeakPoint["severity"] })}>
-                  <option value="medium">中等</option>
-                  <option value="high">严重</option>
-                  <option value="low">轻微</option>
-                </select>
-                <button type="submit">记录薄弱项</button>
-              </form>
-              <div className="list compact">
-                {scopedWeakPoints.map((item) => <article key={item.id} className="item"><strong>{item.title}</strong><small>{item.severity}</small><p>{item.evidence}</p></article>)}
-                {!scopedWeakPoints.length && <p className="muted">还没有薄弱项。</p>}
-              </div>
+            <div className="memorize-list">
+              {[...scopedModules]
+                .sort((a, b) => (a.importance_rank ?? 999) - (b.importance_rank ?? 999))
+                .filter((m) => !dismissedIds.includes(m.id))
+                .map((module) => (
+                  <article
+                    key={module.id}
+                    className={`memorize-card${dismissingId === module.id ? " dismissing" : ""}`}
+                  >
+                    <div className="memorize-card-main" onClick={() => setMemorizeModuleId(module.id)}>
+                      <strong>{displayModuleTitle(module.title, module.note)}</strong>
+                      <div className="module-meta">
+                        <span>{module.estimated_minutes} 分钟</span>
+                        <span>{difficultyLabel(module.difficulty)}</span>
+                        {module.memorization && <span className="kind-badge">已速背</span>}
+                      </div>
+                    </div>
+                    <button
+                      className="mini memorize-zhan"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setDismissingId(module.id);
+                        setTimeout(() => {
+                          setDismissedIds([...dismissedIds, module.id]);
+                          setLastDismissedId(module.id);
+                          setDismissingId("");
+                        }, 300);
+                      }}
+                    >
+                      斩
+                    </button>
+                  </article>
+                ))}
+              {[...scopedModules].filter((m) => !dismissedIds.includes(m.id)).length === 0 && (
+                <p className="muted">{scopedModules.length ? "全部斩完了！点「重置」重新来过。" : "还没有知识点模块。先去计划页让 AI 生成计划。"}</p>
+              )}
             </div>
           </section>
         )}
+
+        {activeTab === "review" && memorizeModuleId && (() => {
+          const module = scopedModules.find((m) => m.id === memorizeModuleId);
+          if (!module) { setMemorizeModuleId(""); return null; }
+          return (
+          <section className="app-section">
+            <div className="panel">
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
+                <button className="secondary" onClick={() => setMemorizeModuleId("")}>← 返回列表</button>
+                <h2 style={{ margin: 0 }}>{displayModuleTitle(module.title, module.note)}</h2>
+              </div>
+              <div className="module-meta">
+                <span>{module.estimated_minutes} 分钟</span>
+                <span>{difficultyLabel(module.difficulty)}</span>
+                <span>{priorityLabel(module.priority)}</span>
+                {module.importance_rank && <span>重要第 {module.importance_rank} 名</span>}
+              </div>
+            </div>
+
+            <div className="panel">
+              <h3>考察内容</h3>
+              {module.exam_points ? renderHumanText(module.exam_points) : <p className="muted">暂无考察内容说明。</p>}
+            </div>
+
+            <div className="panel">
+              <h3>速背内容</h3>
+              {module.memorization ? (
+                renderHumanText(module.memorization)
+              ) : (
+                <div>
+                  <p className="muted">还没有生成速背内容。AI 会根据这个知识点的考察内容，生成核心概念、必背要点、记忆口诀和易错提醒。</p>
+                  <button onClick={() => generateMemorizationContent(module)} disabled={busy}>生成速背内容</button>
+                </div>
+              )}
+              {module.memorization && (
+                <div className="actions wrap" style={{ marginTop: "12px" }}>
+                  <button className="secondary" onClick={() => generateMemorizationContent(module)} disabled={busy}>重新生成</button>
+                </div>
+              )}
+            </div>
+          </section>
+          );
+        })()}
 
       </section>
     </main>

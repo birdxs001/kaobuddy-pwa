@@ -66,6 +66,23 @@ async function deleteById(storeName: StoreName, id: string): Promise<void> {
   });
 }
 
+async function deleteWhereProject(storeName: StoreName, projectId: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeName, "readwrite");
+    const store = transaction.objectStore(storeName);
+    const request = store.getAll();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      (request.result as { id: string; project_id?: string }[])
+        .filter((item) => item.project_id === projectId)
+        .forEach((item) => store.delete(item.id));
+    };
+    transaction.onerror = () => reject(transaction.error);
+    transaction.oncomplete = () => resolve();
+  });
+}
+
 function normalizeTask(task: StudyTask, index: number): StudyTask {
   const moduleStatus = task.module_status || (task.status === "done" ? "done" : "todo");
   return {
@@ -90,6 +107,17 @@ export const storage = {
   weakPoints: () => getAll<WeakPoint>("weak_points"),
   mockAttempts: () => getAll<MockAttempt>("mock_attempts"),
   saveProject: (project: StudyProject) => put("projects", project),
+  deleteProject: async (id: string) => {
+    await Promise.all([
+      deleteWhereProject("materials", id),
+      deleteWhereProject("notes", id),
+      deleteWhereProject("tasks", id),
+      deleteWhereProject("mistakes", id),
+      deleteWhereProject("weak_points", id),
+      deleteWhereProject("mock_attempts", id),
+    ]);
+    await deleteById("projects", id);
+  },
   saveMaterial: (material: StudyMaterial) => put("materials", material),
   deleteMaterial: (id: string) => deleteById("materials", id),
   saveNote: (note: AiNote) => put("notes", note),

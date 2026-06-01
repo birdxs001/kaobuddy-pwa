@@ -1,5 +1,6 @@
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+import mammoth from "mammoth";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -29,6 +30,36 @@ export async function readPdfText(file: File): Promise<string> {
   return pages.join("\n\n");
 }
 
+function stripRtf(text: string) {
+  return text
+    .replace(/\\par[d]?/g, "\n")
+    .replace(/\\'[0-9a-fA-F]{2}/g, "")
+    .replace(/\\[a-zA-Z]+-?\d* ?/g, "")
+    .replace(/[{}]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export async function readDocumentText(file: File): Promise<string> {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".docx")) {
+    const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+    const warnings = result.messages.map((message) => message.message).filter(Boolean);
+    const text = result.value.trim();
+    if (!text) throw new Error("这个 DOCX 没提取到正文，可以另存为 PDF 后再导入。");
+    return [`Word 正文\n${text}`, warnings.length ? `\n读取提醒：${warnings.join("；")}` : ""].filter(Boolean).join("\n");
+  }
+  if (lower.endsWith(".rtf")) {
+    const text = stripRtf(await file.text());
+    if (!text) throw new Error("这个 RTF 没提取到正文，可以另存为 DOCX 或 PDF 后再导入。");
+    return `RTF 正文\n${text}`;
+  }
+  if (lower.endsWith(".doc")) {
+    throw new Error("旧版 .doc 目前无法在浏览器里稳定解析，请另存为 .docx 或 PDF 后再上传。");
+  }
+  throw new Error("这个文档格式暂时不能解析，请换成 DOCX、PDF、TXT 或 Markdown。");
+}
+
 export async function readPdfForAi(file: File): Promise<{ text: string; pageImages: string[]; pageCount: number }> {
   const data = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data }).promise;
@@ -55,12 +86,4 @@ export async function readPdfForAi(file: File): Promise<{ text: string; pageImag
   }
 
   return { text: pages.join("\n\n"), pageImages, pageCount: pdf.numPages };
-}
-
-export function documentPlaceholder(file: File) {
-  return [
-    `${file.name} 已作为 Word/文档资料保存。`,
-    "当前版本会记录文件名和资料类型，但浏览器端暂时不直接解析 doc/docx 正文。",
-    "如果要让 AI 使用正文内容，可以先把文档另存为 PDF，或复制重点内容到文本资料。"
-  ].join("\n");
 }

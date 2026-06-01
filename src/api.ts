@@ -60,6 +60,16 @@ export async function runAi(mode: "plan" | "teach" | "practice" | "mock-exam", p
   return data.content;
 }
 
+export async function runMemorize(payload: AiPayload): Promise<string> {
+  const response = await fetch(`${API_BASE}/api/ai/memorize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await parseResponse<{ content: string }>(response);
+  return data.content;
+}
+
 export async function runModulePractice(payload: AiPayload & { module_title: string; exam_points?: string }): Promise<string> {
   const response = await fetch(`${API_BASE}/api/ai/module-practice`, {
     method: "POST",

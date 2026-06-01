@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .ai_client import AiClientError, chat_completion
 from .prompts import (
+    MEMORIZE_SYSTEM_PROMPT,
     MODULE_PRACTICE_SYSTEM_PROMPT,
     MOCK_SYSTEM_PROMPT,
     OCR_SYSTEM_PROMPT,
@@ -130,6 +131,15 @@ async def make_plan(request: AiRequest) -> AiResponse:
     )
 
 
+@app.post("/api/ai/memorize", response_model=AiResponse)
+async def memorize(request: AiRequest) -> AiResponse:
+    return await _run_ai(
+        request,
+        MEMORIZE_SYSTEM_PROMPT,
+        "请根据资料和补充要求中的知识点，生成可直接背诵的考前速记内容。",
+    )
+
+
 @app.post("/api/ai/teach", response_model=AiResponse)
 async def teach(request: AiRequest) -> AiResponse:
     return await _run_ai(
@@ -151,7 +161,7 @@ async def practice(request: PracticeRequest) -> AiResponse:
     return await _run_ai(
         enriched,
         PRACTICE_SYSTEM_PROMPT,
-        "请生成一套模拟卷，给出题目、分值、建议用时、答案区、参考答案、解析和薄弱项提醒。",
+        "请生成或批改一组练习题，给出题目、参考答案、解析和薄弱项提醒。",
     )
 
 
@@ -174,7 +184,7 @@ async def mock_exam(request: AiRequest) -> AiResponse:
     return await _run_ai(
         request,
         MOCK_SYSTEM_PROMPT,
-        "请生成一套手机上可完成的短模考卷，包含题目、分值、答题提示和考后查漏清单。",
+        "请根据补充要求中指定的考试时长生成对应题量的模拟卷。",
     )
 
 

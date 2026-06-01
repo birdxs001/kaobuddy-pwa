@@ -87,12 +87,8 @@ def test_plan_prompt_is_material_driven_module_cards(monkeypatch):
 
     assert response.status_code == 200
     assert "只根据导入资料" in captured["system"]
-    assert "不要按每天学习时长" in captured["system"]
-    assert "知识点名称" in captured["user"]
-    assert "预计完成时间" in captured["user"]
-    assert "难度" in captured["user"]
-    assert "重要程度排名" in captured["user"]
-    assert "考察内容" in captured["user"]
+    assert "知识点" in captured["system"]
+    assert "不能是学习安排" in captured["system"]
 
 
 def test_module_practice_prompt_focuses_on_current_module(monkeypatch):
