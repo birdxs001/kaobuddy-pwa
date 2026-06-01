@@ -634,7 +634,6 @@ export default function App() {
     event.preventDefault();
     if (!projectDraft.subject.trim()) return setStatus("科目要填一下，比如高数、法考、期末英语。");
     if (!projectDraft.exam_date) return setStatus("考试日期也要填，不然我没法算倒计时。");
-    if (!projectDraft.daily_minutes || projectDraft.daily_minutes < 10) return setStatus("每天学习时间至少填 10 分钟。");
     const timestamp = nowIso();
     const project: StudyProject = {
       id: createId("project"),
@@ -1054,7 +1053,6 @@ export default function App() {
       <h2>{projects.length ? "新建项目" : "创建第一个项目"}</h2>
       <label>科目<input value={projectDraft.subject} onChange={(event) => setProjectDraft({ ...projectDraft, subject: event.target.value })} placeholder="比如 高数 / 法考 / 期末英语" /></label>
       <label>考试日期<input type="date" value={projectDraft.exam_date} onChange={(event) => setProjectDraft({ ...projectDraft, exam_date: event.target.value })} /></label>
-      <label>每天大概能学多久（分钟）<input type="number" min="10" value={projectDraft.daily_minutes} onChange={(event) => setProjectDraft({ ...projectDraft, daily_minutes: Number(event.target.value) })} /></label>
       <label>目标分数<input value={projectDraft.target_score} onChange={(event) => setProjectDraft({ ...projectDraft, target_score: event.target.value })} placeholder="可不填" /></label>
       <label>薄弱项<textarea value={projectDraft.weak_points} onChange={(event) => setProjectDraft({ ...projectDraft, weak_points: event.target.value })} placeholder="可不填，后面可以让 AI 推断" /></label>
       <button type="submit">{projects.length ? "保存项目" : "开始建立项目"}</button>
