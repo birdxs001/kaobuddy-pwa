@@ -37,7 +37,7 @@ DIST_DIR = ROOT_DIR / "dist"
 PUBLIC_DIR = ROOT_DIR / "public"
 
 
-app = FastAPI(title="KaoBuddy API", version="0.2.0")
+app = FastAPI(title="KaoBuddy API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
