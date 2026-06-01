@@ -1158,7 +1158,7 @@ export default function App() {
                 <li>先连接自己的 AI API。</li>
                 <li>创建一个考试项目，比如操作系统、高数、法考。</li>
                 <li>把课件、教材、笔记和视频资料放进项目。</li>
-                <li>让 AI 生成知识模块计划，而不是一长串日期任务。</li>
+                <li>让 AI 生成知识模块计划。</li>
                 <li>按模块学习、拖动顺序、完成后标记，最后用模拟考和复盘查漏补缺。</li>
               </ol>
               <div className="actions">
