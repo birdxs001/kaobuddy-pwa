@@ -1027,7 +1027,8 @@ export default function App() {
   async function generateModuleQuestions(module: StudyTask) {
     if (!requireProject() || !requireApi()) return;
     if (!scopedMaterials.length) return setStatus("先导入资料，再生成这个知识点的模拟题。");
-    setBusyLabel(`正在生成「${displayModuleTitle(module.title, module.note)}」的模拟题...`);
+    const isRefreshing = Boolean(module.practice_questions);
+    setBusyLabel(`正在${isRefreshing ? "换一批" : "生成"}「${displayModuleTitle(module.title, module.note)}」的模拟题...`);
     try {
       const moduleTitle = displayModuleTitle(module.title, module.note);
       const content = await runModulePractice({
@@ -1045,7 +1046,7 @@ export default function App() {
       };
       await storage.saveTask(updated);
       setSelectedModuleId(module.id);
-      setStatus("模块模拟题已生成。");
+      setStatus(isRefreshing ? "已换成新一批模块模拟题。" : "模块模拟题已生成。");
       await refresh();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "模块模拟题生成失败。");
@@ -1549,7 +1550,9 @@ export default function App() {
                   <h3>模块模拟题</h3>
                   {selectedModule.practice_questions ? renderHumanText(selectedModule.practice_questions) : <p className="muted">学完这个知识点后，可以生成几道只围绕它的小题。</p>}
                   <div className="actions wrap">
-                    <button onClick={() => generateModuleQuestions(selectedModule)} disabled={busy}>生成模块模拟题</button>
+                    <button onClick={() => generateModuleQuestions(selectedModule)} disabled={busy}>
+                      {selectedModule.practice_questions ? "换一批模拟题" : "生成模块模拟题"}
+                    </button>
                     {moduleStatus(selectedModule) !== "done" && <button className="secondary" onClick={() => completeModule(selectedModule)}>完成学习</button>}
                   </div>
                 </div>
