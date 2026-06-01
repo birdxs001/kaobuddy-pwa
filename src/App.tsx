@@ -965,6 +965,12 @@ export default function App() {
     await refresh();
   }
 
+  async function startModule(module: StudyTask) {
+    await storage.saveTask({ ...module, status: "todo", module_status: "doing", updated_at: nowIso() });
+    setStatus("已开始学习这个知识模块。");
+    await refresh();
+  }
+
   function openModule(module: StudyTask) {
     setSelectedModuleId(module.id);
     setActiveTab("module");
@@ -1391,13 +1397,13 @@ export default function App() {
                       >
                         <strong>{displayModuleTitle(item.title, item.note)}</strong>
                         <div className="module-meta">
-                          <span>{item.estimated_minutes} 分钟</span>
+                          <span>预计 {item.estimated_minutes} 分钟</span>
                           <span>{difficultyLabel(item.difficulty)}</span>
                         </div>
                         {moduleStatus(item) !== "done" && <button className="mini" onClick={(event) => {
                           event.stopPropagation();
-                          completeModule(item);
-                        }}>完成学习</button>}
+                          startModule(item);
+                        }}>点击学习</button>}
                       </article>
                     ))}
                     {!columnModules.length && <span className="empty-slot">拖到这里</span>}
@@ -1469,7 +1475,7 @@ export default function App() {
                     <span className="kind-badge">知识点模块</span>
                     <h2>{displayModuleTitle(selectedModule.title, selectedModule.note)}</h2>
                     <div className="module-meta detail-meta">
-                      <span>{selectedModule.estimated_minutes} 分钟</span>
+                      <span>预计 {selectedModule.estimated_minutes} 分钟</span>
                       <span>{difficultyLabel(selectedModule.difficulty)}</span>
                       <span>{priorityLabel(selectedModule.priority)}</span>
                       <span>重要排名第 {selectedModule.importance_rank || selectedModule.order || 1}</span>
