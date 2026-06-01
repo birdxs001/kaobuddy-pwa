@@ -211,6 +211,11 @@ p {
   gap: 14px;
 }
 
+.setup-return {
+  justify-self: start;
+  margin-top: 6px;
+}
+
 .setup-actions {
   justify-content: space-between;
 }

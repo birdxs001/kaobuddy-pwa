@@ -520,6 +520,7 @@ export default function App() {
   const [status, setStatus] = useState("准备好了。");
   const [busyLabel, setBusyLabel] = useState("");
   const [setupStep, setSetupStep] = useState<SetupStep>("intro");
+  const [showSetup, setShowSetup] = useState(false);
 
   async function refresh() {
     const [projectRows, materialRows, noteRows, taskRows, mistakeRows, weakPointRows, mockRows] = await Promise.all([
@@ -696,6 +697,7 @@ export default function App() {
     setActiveProjectId(project.id);
     setActiveTab("overview");
     setShowNewProject(false);
+    setShowSetup(false);
     setStatus("考试项目已创建。");
     await refresh();
   }
@@ -1112,7 +1114,7 @@ export default function App() {
 
   const setupIndex = setupSteps.findIndex((item) => item.step === setupStep);
 
-  if (!projects.length) {
+  if (!projects.length || showSetup) {
     return (
       <main className="home">
         <div className={statusClass} aria-live="polite">{statusMessage}</div>
@@ -1121,6 +1123,18 @@ export default function App() {
             <p className="eyebrow">KaoBuddy</p>
             <h1>考搭子</h1>
             <p>用你自己的 AI API，把课件、笔记、PDF、手写资料和视频字幕整理成考前复习计划，再按知识模块一点点推进。</p>
+            {!!projects.length && (
+              <button
+                className="secondary setup-return"
+                type="button"
+                onClick={() => {
+                  setShowSetup(false);
+                  setStatus("已回到项目工作区。");
+                }}
+              >
+                回到当前项目
+              </button>
+            )}
           </div>
 
           <nav className="setup-steps" aria-label="初始化进度">
@@ -1199,6 +1213,17 @@ export default function App() {
           <span>KaoBuddy</span>
         </div>
         <button className="secondary" onClick={() => setShowNewProject((value) => !value)}>{showNewProject ? "收起新建" : "新建项目"}</button>
+        <button
+          className="secondary"
+          onClick={() => {
+            setShowSetup(true);
+            setSetupStep("intro");
+            setShowNewProject(false);
+            setStatus("已打开初始化页面，可以回看流程或调整 API。");
+          }}
+        >
+          初始化页面
+        </button>
         {showNewProject && <div className="sidebar-form">{projectForm}</div>}
         <div className="project-list">
           {projects.map((project) => (
