@@ -715,6 +715,33 @@ small {
   padding-left: 20px;
 }
 
+.ai-table {
+  width: 100%;
+  border-collapse: collapse;
+  overflow: hidden;
+  border: 1px solid #ded8c9;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #3b4844;
+}
+
+.ai-table th,
+.ai-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #e7e1d2;
+  text-align: left;
+}
+
+.ai-table th {
+  background: #e4ebe5;
+  color: #28524f;
+  font-weight: 850;
+}
+
+.ai-table tr:last-child td {
+  border-bottom: 0;
+}
+
 .plan-actions {
   margin-bottom: 16px;
 }

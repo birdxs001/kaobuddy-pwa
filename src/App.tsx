@@ -167,12 +167,35 @@ function stripMarkdown(text: string) {
     .replace(/^\s*[-—–_]{3,}\s*$/gm, "")
     .replace(/^\s*[-*]\s+/gm, "• ")
     .replace(/[*_~#]+/g, "")
-    .replace(/\|/g, " ")
     .trim();
 }
 
 function isDividerLine(text: string) {
   return /^[-—–_]{3,}$/.test(text.trim());
+}
+
+function tableCells(line: string) {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "").trim();
+  return trimmed.includes("|")
+    ? trimmed.split("|").map((cell) => cell.trim()).filter(Boolean)
+    : trimmed.split(/\s+/).map((cell) => cell.trim()).filter(Boolean);
+}
+
+function isTableSeparator(line: string) {
+  const cells = tableCells(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseTableBlock(lines: string[]) {
+  const separatorIndex = lines.findIndex(isTableSeparator);
+  if (separatorIndex <= 0) return null;
+  const headers = tableCells(lines[separatorIndex - 1]);
+  if (headers.length < 2) return null;
+  const rows = lines
+    .slice(separatorIndex + 1)
+    .map(tableCells)
+    .filter((cells) => cells.length === headers.length);
+  return rows.length ? { headers, rows } : null;
 }
 
 function previewText(text: string, max = 220) {
@@ -240,6 +263,23 @@ function renderHumanText(text: string) {
     <div className="ai-text">
       {blocks.map((block, index) => {
         const lines = block.split(/\n/).map((line) => line.trim()).filter(Boolean);
+        const table = parseTableBlock(lines);
+        if (table) {
+          return (
+            <table className="ai-table" key={index}>
+              <thead>
+                <tr>{table.headers.map((header) => <th key={header}>{header}</th>)}</tr>
+              </thead>
+              <tbody>
+                {table.rows.map((row, rowIndex) => (
+                  <tr key={`${index}-${rowIndex}`}>
+                    {row.map((cell, cellIndex) => <td key={`${cell}-${cellIndex}`}>{cell}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        }
         const isList = lines.length > 1 && lines.every((line) => line.startsWith("• "));
         if (isList) {
           return (
