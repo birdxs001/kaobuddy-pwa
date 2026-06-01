@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .ai_client import AiClientError, chat_completion
 from .prompts import (
+    MODULE_PRACTICE_SYSTEM_PROMPT,
     MOCK_SYSTEM_PROMPT,
     OCR_SYSTEM_PROMPT,
     PLAN_SYSTEM_PROMPT,
@@ -21,6 +22,7 @@ from .schemas import (
     ChatCompletionRequest,
     ChatMessage,
     HandwritingRequest,
+    ModulePracticeRequest,
     PracticeRequest,
     VideoImportRequest,
     VideoImportResponse,
@@ -117,7 +119,7 @@ async def make_plan(request: AiRequest) -> AiResponse:
     return await _run_ai(
         request,
         PLAN_SYSTEM_PROMPT,
-        "请输出给学生直接看的知识点模块计划，不按日期排。每个模块用自然中文独立小节呈现，包含模块名、优先级、预计学习时间、为什么重要、建议练习方式和完成标准。不要输出 JSON、数组或字段名。",
+        "请只根据导入资料抽取知识点卡片模块，不按日期排，不按每天学习时长安排。每个模块必须包含知识点名称、预计完成时间、难度、重要程度排名、考察内容和建议练习方式。不要输出 JSON、数组或字段名。",
     )
 
 
@@ -143,6 +145,19 @@ async def practice(request: PracticeRequest) -> AiResponse:
         enriched,
         PRACTICE_SYSTEM_PROMPT,
         "请生成一套模拟卷，给出题目、分值、建议用时、答案区、参考答案、解析和薄弱项提醒。",
+    )
+
+
+@app.post("/api/ai/module-practice", response_model=AiResponse)
+async def module_practice(request: ModulePracticeRequest) -> AiResponse:
+    return await _run_ai(
+        request,
+        MODULE_PRACTICE_SYSTEM_PROMPT,
+        (
+            f"当前知识点：{request.module_title}\n"
+            f"考察内容：{request.exam_points or '按资料判断'}\n"
+            "请只围绕这个知识点生成 3 到 5 道模块内模拟题，包含题目、参考答案和简短解析。"
+        ),
     )
 
 

@@ -73,6 +73,10 @@ function normalizeTask(task: StudyTask, index: number): StudyTask {
     status: moduleStatus === "done" ? "done" : "todo",
     module_status: moduleStatus,
     priority: task.priority || "medium",
+    difficulty: task.difficulty || "medium",
+    importance_rank: typeof task.importance_rank === "number" ? task.importance_rank : index + 1,
+    exam_points: task.exam_points || task.note || "",
+    practice_questions: task.practice_questions || "",
     order: typeof task.order === "number" ? task.order : index,
   };
 }

@@ -50,6 +50,11 @@ class PracticeRequest(AiRequest):
     answers: List[PracticeAnswer] = []
 
 
+class ModulePracticeRequest(AiRequest):
+    module_title: str = Field(min_length=1, max_length=120)
+    exam_points: str = ""
+
+
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: Any

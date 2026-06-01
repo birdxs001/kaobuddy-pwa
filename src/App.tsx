@@ -1,5 +1,5 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { importVideo, recognizeHandwriting, runAi, testApiConfig } from "./api";
+import { FormEvent, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { importVideo, recognizeHandwriting, runAi, runModulePractice, testApiConfig } from "./api";
 import { documentPlaceholder, readAsDataUrl, readPdfText, readTextFile } from "./fileReaders";
 import { createId, storage } from "./storage";
 import type {
@@ -15,9 +15,10 @@ import type {
   WeakPoint
 } from "./types";
 
-type ProjectTab = "overview" | "materials" | "plan" | "result" | "review";
+type ProjectTab = "overview" | "materials" | "plan" | "module" | "result" | "review";
 type ModuleStatus = "todo" | "doing" | "done";
 type ModulePriority = "low" | "medium" | "high";
+type ModuleDifficulty = "low" | "medium" | "high";
 type UploadQueueItem = {
   id: string;
   name: string;
@@ -52,6 +53,7 @@ const emptyModule = {
   title: "",
   estimated_minutes: 45,
   priority: "medium" as ModulePriority,
+  difficulty: "medium" as ModuleDifficulty,
   note: ""
 };
 
@@ -75,9 +77,9 @@ const emptyMock = {
 };
 
 const moduleColumns: { status: ModuleStatus; title: string; hint: string }[] = [
-  { status: "todo", title: "待学", hint: "还没开始的知识点" },
-  { status: "doing", title: "学习中", hint: "这两天正在啃的内容" },
-  { status: "done", title: "已完成", hint: "已经过一遍的模块" }
+  { status: "todo", title: "待学习", hint: "还没开始的知识点" },
+  { status: "doing", title: "学习中", hint: "正在学的内容" },
+  { status: "done", title: "已学习", hint: "已经学完的模块" }
 ];
 
 const visibleTabs: { tab: ProjectTab; label: string }[] = [
@@ -257,14 +259,59 @@ function toProjectPayload(project: StudyProject) {
 }
 
 function parsePriority(line: string): ModulePriority {
-  if (/高|重要|核心|优先/.test(line)) return "high";
+  if (/重要排名\s*[:：]?\s*[1-3]\b|高|重要|核心|优先/.test(line)) return "high";
   if (/低|选学|有空/.test(line)) return "low";
   return "medium";
+}
+
+function parseDifficulty(text: string): ModuleDifficulty {
+  const cleaned = stripMarkdown(text);
+  const match = cleaned.match(/难度\s*[:：]\s*(低|中|高|简单|一般|困难)/);
+  const value = match?.[1] || cleaned;
+  if (/高|困难|难/.test(value)) return "high";
+  if (/低|简单|易/.test(value)) return "low";
+  return "medium";
+}
+
+function difficultyLabel(value?: ModuleDifficulty) {
+  if (value === "high") return "难度高";
+  if (value === "low") return "难度低";
+  return "难度中";
+}
+
+function priorityLabel(value?: ModulePriority) {
+  if (value === "high") return "高重要";
+  if (value === "low") return "低重要";
+  return "中重要";
+}
+
+function extractNumber(text: string, patterns: RegExp[]) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const value = Number(match[1]);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return undefined;
+}
+
+function extractField(text: string, names: string[]) {
+  const label = names.join("|");
+  const pattern = new RegExp(`(?:${label})\\s*[:：]\\s*([^；;\\n]+)`);
+  return stripMarkdown(text.match(pattern)?.[1] || "").trim();
+}
+
+function extractExamPoints(text: string) {
+  return extractField(text, ["考察内容", "考查内容", "考点内容", "考试内容", "会考什么", "重点"]);
 }
 
 function extractModuleTitle(line: string) {
   const cleaned = stripMarkdown(line)
     .replace(/预计(学习)?时间\s*[:：]?\s*\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
+    .replace(/预计完成时间\s*[:：]?\s*\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
+    .replace(/难度\s*[:：]\s*(低|中|高|简单|一般|困难)/g, "")
+    .replace(/重要(程度)?排名\s*[:：]?\s*\d+/g, "")
     .replace(/\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
     .replace(/^(第\s*\d+\s*(天|章|页)\s*)+/g, "")
     .trim();
@@ -299,10 +346,12 @@ function parseModulesFromPlan(content: string, projectId: string, noteId: string
           const record = item as Record<string, unknown>;
           const rawTitle = String(record.title || record.name || record.module || record.moduleName || "");
           const note = String(record.note || record.reason || record.description || record.practice || "");
+          const examPoints = String(record.exam_points || record.examPoints || record.points || record.content || record.test_points || note || "");
           const title = extractModuleTitle(rawTitle) || extractModuleTitle(note) || compactTitle(rawTitle, "知识点");
           if (!title || seen.has(title)) return [];
           seen.add(title);
           const rawMinutes = Number(record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes);
+          const rawRank = Number(record.importance_rank ?? record.importanceRank ?? record.rank);
           const line = humanReadableAiText(JSON.stringify([record]));
           return [{
             id: createId("module"),
@@ -313,6 +362,9 @@ function parseModulesFromPlan(content: string, projectId: string, noteId: string
             status: "todo",
             module_status: "todo",
             priority: parsePriority(String(record.priority || "")),
+            difficulty: parseDifficulty(String(record.difficulty || record.level || "")),
+            importance_rank: Number.isFinite(rawRank) ? rawRank : existingCount + index + 1,
+            exam_points: stripMarkdown(examPoints),
             order: existingCount + index,
             source_note_id: noteId,
             note: line || note || rawTitle,
@@ -338,13 +390,15 @@ function parseModulesFromPlan(content: string, projectId: string, noteId: string
     const title = extractModuleTitle(line);
     if (!title || seen.has(title)) return [];
     seen.add(title);
-    const minutesMatch = line.match(/(\d+)\s*(分钟|min)/i);
+    const minutesMatch = line.match(/(?:预计(?:完成|学习)?时间\s*[:：]?\s*)?(\d+)\s*(分钟|min)/i);
     const hourMatch = line.match(/(\d+(?:\.\d+)?)\s*(小时|h)/i);
     const estimatedMinutes = minutesMatch
       ? normalizeMinutes(Number(minutesMatch[1]))
       : hourMatch
         ? normalizeMinutes(Number(hourMatch[1]) * 60)
         : 45;
+    const rank = extractNumber(line, [/重要(?:程度)?排名\s*[:：]?\s*(\d+)/, /排名\s*[:：]?\s*(\d+)/]);
+    const examPoints = extractExamPoints(line);
     return [{
       id: createId("module"),
       project_id: projectId,
@@ -354,6 +408,9 @@ function parseModulesFromPlan(content: string, projectId: string, noteId: string
       status: "todo",
       module_status: "todo",
       priority: parsePriority(line),
+      difficulty: parseDifficulty(line),
+      importance_rank: rank || existingCount + index + 1,
+      exam_points: examPoints,
       order: existingCount + index,
       source_note_id: noteId,
       note: line,
@@ -387,6 +444,7 @@ export default function App() {
   const [weakPointDraft, setWeakPointDraft] = useState(emptyWeakPoint);
   const [mockDraft, setMockDraft] = useState(emptyMock);
   const [draggingModuleId, setDraggingModuleId] = useState("");
+  const [selectedModuleId, setSelectedModuleId] = useState("");
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [resultNote, setResultNote] = useState<AiNote | null>(null);
   const [status, setStatus] = useState("准备好了。");
@@ -448,6 +506,9 @@ export default function App() {
   const progress = scopedModules.length ? Math.round((completedModules / scopedModules.length) * 100) : 0;
   const busy = Boolean(busyLabel);
   const currentFocusModule = scopedModules.find((item) => moduleStatus(item) !== "done");
+  const selectedModule = selectedModuleId
+    ? scopedModules.find((item) => item.id === selectedModuleId) || null
+    : null;
   const latestPlanNote = scopedNotes.find((note) => note.mode === "plan");
   const latestTeachNote = scopedNotes.find((note) => note.mode === "teach");
   const latestPracticeNote = scopedNotes.find((note) => note.mode === "practice");
@@ -680,7 +741,9 @@ export default function App() {
   async function runMode(mode: "plan" | "teach" | "practice" | "mock-exam", title: string) {
     if (!requireProject() || !requireApi()) return;
     if (!scopedMaterials.length && mode === "plan") {
-      setStatus("资料为空，计划会更粗略；我先按考试信息帮你排。");
+      setStatus("先导入资料，再生成知识点模块。现在不会按空资料乱编计划。");
+      setActiveTab("materials");
+      return;
     }
     setBusyLabel(`正在生成${title}...`);
     try {
@@ -716,7 +779,12 @@ export default function App() {
     if (!parsed.length) return setStatus("这份计划没拆出进程、线程这类明确知识点名，可以重新生成或手动新增模块。");
     const ok = window.confirm(`我拆出了 ${parsed.length} 个知识模块，要加入计划看板吗？`);
     if (!ok) return;
-    await Promise.all(parsed.map(storage.saveTask));
+    await Promise.all(parsed.map((item, index) => storage.saveTask({
+      ...item,
+      importance_rank: item.importance_rank || index + 1,
+      difficulty: item.difficulty || "medium",
+      exam_points: item.exam_points || item.note || ""
+    })));
     setStatus(`${parsed.length} 个知识模块已加入计划。`);
     setActiveTab("plan");
     await refresh();
@@ -744,6 +812,9 @@ export default function App() {
       status: "todo",
       module_status: "todo",
       priority: moduleDraft.priority,
+      difficulty: moduleDraft.difficulty,
+      importance_rank: scopedModules.length + 1,
+      exam_points: moduleDraft.note.trim(),
       order: scopedModules.length,
       note: moduleDraft.note.trim(),
       created_at: timestamp,
@@ -778,9 +849,43 @@ export default function App() {
   }
 
   async function completeModule(module: StudyTask) {
-    await storage.saveTask({ ...module, status: "done", module_status: "done", updated_at: nowIso() });
+    await storage.saveTask({ ...module, status: "done", module_status: "done", completed_at: nowIso(), updated_at: nowIso() });
     setStatus("这个知识模块已完成。");
     await refresh();
+  }
+
+  function openModule(module: StudyTask) {
+    setSelectedModuleId(module.id);
+    setActiveTab("module");
+  }
+
+  async function generateModuleQuestions(module: StudyTask) {
+    if (!requireProject() || !requireApi()) return;
+    if (!scopedMaterials.length) return setStatus("先导入资料，再生成这个知识点的模拟题。");
+    setBusyLabel(`正在生成「${displayModuleTitle(module.title, module.note)}」的模拟题...`);
+    try {
+      const content = await runModulePractice({
+        api_config: apiConfig,
+        project: toProjectPayload(activeProject!),
+        materials: scopedMaterials.map(({ title, kind, content }) => ({ title, kind, content })),
+        extra,
+        module_title: displayModuleTitle(module.title, module.note),
+        exam_points: module.exam_points || module.note || ""
+      });
+      const updated = {
+        ...module,
+        practice_questions: stripMarkdown(content),
+        updated_at: nowIso()
+      };
+      await storage.saveTask(updated);
+      setSelectedModuleId(module.id);
+      setStatus("模块模拟题已生成。");
+      await refresh();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "模块模拟题生成失败。");
+    } finally {
+      setBusyLabel("");
+    }
   }
 
   async function saveMistake(event: FormEvent) {
@@ -924,6 +1029,7 @@ export default function App() {
                 setActiveProjectId(project.id);
                 setActiveTab("overview");
                 setResultNote(null);
+                setSelectedModuleId("");
               }}
             >
               <span>{project.subject}</span>
@@ -942,8 +1048,10 @@ export default function App() {
           </div>
           <div className="progress-card">
             <span>整体完成进度</span>
-            <strong>{progress}%</strong>
-            <div className="progress"><span style={{ width: `${Math.min(progress, 100)}%` }} /></div>
+            <div className="progress-ring" style={{ "--progress": `${Math.min(progress, 100)}%` } as CSSProperties}>
+              <strong>{progress}%</strong>
+            </div>
+            <small>{completedModules} / {scopedModules.length} 个模块已学习</small>
           </div>
         </header>
 
@@ -965,7 +1073,7 @@ export default function App() {
             <div className="panel metric-panel">
               <span>知识模块</span>
               <strong>{completedModules} / {scopedModules.length}</strong>
-              <small>完成进度按模块数量计算。</small>
+              <small>学习进度按已学习模块数量计算。</small>
             </div>
             <div className="panel metric-panel">
               <span>当前重点</span>
@@ -1061,6 +1169,11 @@ export default function App() {
               <h2>手动加模块</h2>
               <input value={moduleDraft.title} onChange={(event) => setModuleDraft({ ...moduleDraft, title: event.target.value })} placeholder="知识点名称" />
               <input aria-label="预计学习时间" type="number" min="10" value={moduleDraft.estimated_minutes} onChange={(event) => setModuleDraft({ ...moduleDraft, estimated_minutes: Number(event.target.value) })} />
+              <select aria-label="难度" value={moduleDraft.difficulty} onChange={(event) => setModuleDraft({ ...moduleDraft, difficulty: event.target.value as ModuleDifficulty })}>
+                <option value="low">难度低</option>
+                <option value="medium">难度中</option>
+                <option value="high">难度高</option>
+              </select>
               <button type="submit">加入计划</button>
             </form>
 
@@ -1089,12 +1202,18 @@ export default function App() {
                           event.stopPropagation();
                           moveModule(column.status, item.id);
                         }}
+                        onClick={() => openModule(item)}
                       >
                         <strong>{displayModuleTitle(item.title, item.note)}</strong>
                         <div className="module-meta">
                           <span>{item.estimated_minutes} 分钟</span>
+                          <span>{difficultyLabel(item.difficulty)}</span>
+                          <span>第 {item.importance_rank || item.order || 1} 位</span>
                         </div>
-                        {moduleStatus(item) !== "done" && <button className="mini" onClick={() => completeModule(item)}>完成</button>}
+                        {moduleStatus(item) !== "done" && <button className="mini" onClick={(event) => {
+                          event.stopPropagation();
+                          completeModule(item);
+                        }}>完成学习</button>}
                       </article>
                     ))}
                     {!columnModules.length && <span className="empty-slot">拖到这里</span>}
@@ -1103,6 +1222,48 @@ export default function App() {
               })}
             </div>
 
+          </section>
+        )}
+
+        {activeTab === "module" && (
+          <section className="app-section">
+            {selectedModule ? (
+              <div className="panel module-detail">
+                <div className="module-detail-head">
+                  <div>
+                    <span className="kind-badge">知识点模块</span>
+                    <h2>{displayModuleTitle(selectedModule.title, selectedModule.note)}</h2>
+                    <div className="module-meta detail-meta">
+                      <span>{selectedModule.estimated_minutes} 分钟</span>
+                      <span>{difficultyLabel(selectedModule.difficulty)}</span>
+                      <span>{priorityLabel(selectedModule.priority)}</span>
+                      <span>重要排名第 {selectedModule.importance_rank || selectedModule.order || 1}</span>
+                      <span>{moduleStatus(selectedModule) === "done" ? "已学习" : moduleStatus(selectedModule) === "doing" ? "学习中" : "待学习"}</span>
+                    </div>
+                  </div>
+                  <button className="secondary" onClick={() => setActiveTab("plan")}>回到计划</button>
+                </div>
+
+                <div className="detail-block">
+                  <h3>会考什么</h3>
+                  {renderHumanText(selectedModule.exam_points || selectedModule.note || "这个模块还没有考察内容说明，可以重新生成计划或手动补充。")}
+                </div>
+
+                <div className="detail-block">
+                  <h3>模块模拟题</h3>
+                  {selectedModule.practice_questions ? renderHumanText(selectedModule.practice_questions) : <p className="muted">学完这个知识点后，可以生成几道只围绕它的小题。</p>}
+                  <div className="actions wrap">
+                    <button onClick={() => generateModuleQuestions(selectedModule)} disabled={busy}>生成模块模拟题</button>
+                    {moduleStatus(selectedModule) !== "done" && <button className="secondary" onClick={() => completeModule(selectedModule)}>完成学习</button>}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="panel">
+                <p className="muted">先从计划页选择一个知识点模块。</p>
+                <button onClick={() => setActiveTab("plan")}>回到计划</button>
+              </div>
+            )}
           </section>
         )}
 

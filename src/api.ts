@@ -41,6 +41,16 @@ export async function runAi(mode: "plan" | "teach" | "practice" | "mock-exam", p
   return data.content;
 }
 
+export async function runModulePractice(payload: AiPayload & { module_title: string; exam_points?: string }): Promise<string> {
+  const response = await fetch(`${API_BASE}/api/ai/module-practice`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await parseResponse<{ content: string }>(response);
+  return data.content;
+}
+
 export async function importVideo(url: string) {
   const response = await fetch(`${API_BASE}/api/video/import`, {
     method: "POST",
@@ -65,4 +75,3 @@ export async function recognizeHandwriting(api_config: ApiConfig, image_data_url
   const data = await parseResponse<{ content: string }>(response);
   return data.content;
 }
-

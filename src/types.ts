@@ -54,6 +54,11 @@ export type StudyTask = {
   status: "todo" | "done";
   module_status?: "todo" | "doing" | "done";
   priority?: "low" | "medium" | "high";
+  difficulty?: "low" | "medium" | "high";
+  importance_rank?: number;
+  exam_points?: string;
+  practice_questions?: string;
+  completed_at?: string;
   order?: number;
   source_note_id?: string;
   note?: string;
