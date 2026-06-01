@@ -899,6 +899,19 @@ small {
   font-size: 18px;
 }
 
+.detail-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.detail-title span {
+  color: #68736f;
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .empty-slot {
   display: grid;
   min-height: 82px;

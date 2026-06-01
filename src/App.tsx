@@ -1532,7 +1532,10 @@ export default function App() {
                 </div>
 
                 <div className="detail-block">
-                  <h3>会考什么</h3>
+                  <div className="detail-title">
+                    <h3>会考什么</h3>
+                    <span>根据导入资料推测，优先考虑往年题</span>
+                  </div>
                   {renderHumanText(selectedModule.exam_points || selectedModule.note || "这个模块还没有考察内容说明，可以重新生成计划或手动补充。")}
                 </div>
 
