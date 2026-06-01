@@ -12,9 +12,28 @@ type AiPayload = {
 async function parseResponse<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.detail || "请求失败，请稍后再试。");
+    throw new Error(formatApiError(data.detail));
   }
   return data as T;
+}
+
+function formatApiError(detail: unknown): string {
+  if (!detail) return "请求失败，请稍后再试。";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object" && "msg" in item) return String(item.msg);
+        return "";
+      })
+      .filter(Boolean);
+    return messages.join("；") || "请求内容格式不对，请检查后再试。";
+  }
+  if (typeof detail === "object" && "message" in detail) {
+    return String((detail as { message: unknown }).message);
+  }
+  return "请求内容格式不对，请检查后再试。";
 }
 
 export async function testApiConfig(api_config: ApiConfig): Promise<string> {

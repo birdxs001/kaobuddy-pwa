@@ -773,6 +773,7 @@ export default function App() {
   async function handleVideoImport() {
     if (!requireProject()) return;
     if (!videoUrl.trim()) return setStatus("先粘贴视频链接。");
+    if (!/^https?:\/\/\S+$/i.test(videoUrl.trim())) return setStatus("这里要粘贴完整视频链接，比如 https://www.bilibili.com/video/...。");
     setBusyLabel("正在读取视频公开信息...");
     try {
       const result = await importVideo(videoUrl.trim());
@@ -788,7 +789,7 @@ export default function App() {
         created_at: nowIso()
       });
       setVideoUrl("");
-      setStatus(result.warnings[0] || "视频资料已导入。");
+      setStatus(result.subtitles ? "视频字幕已导入资料库。" : result.warnings[0] || "视频信息已保存，但没有抓到公开字幕。");
       await refresh();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "视频导入失败。");
