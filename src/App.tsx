@@ -1253,7 +1253,7 @@ export default function App() {
         <div className={statusClass} aria-live="polite">{statusMessage}</div>
         <section className="setup-shell app-section">
           <div className="setup-hero">
-            <p className="eyebrow">KaoBuddy</p>
+            <p className="eyebrow">KaoBuddy · 一款专注于临时抱佛脚的项目</p>
             <h1>考搭子</h1>
             <p>用你自己的 AI API，把课件、笔记、PDF、手写资料和视频字幕整理成考前复习计划，再按知识模块一点点推进。</p>
             {!!projects.length && (
