@@ -143,6 +143,78 @@ p {
   grid-column: span 2;
 }
 
+.setup-shell {
+  display: grid;
+  gap: 18px;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.setup-hero {
+  display: grid;
+  align-content: end;
+  min-height: 260px;
+  padding: 34px 0 22px;
+  border-bottom: 1px solid #d8d2c2;
+}
+
+.setup-hero p {
+  max-width: 760px;
+  margin: 18px 0 0;
+  color: #3e4a46;
+  font-size: 18px;
+}
+
+.setup-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.setup-steps button {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  min-height: 72px;
+  padding: 12px;
+  color: #28524f;
+  border: 1px solid #c8d3cd;
+  background: #e4ebe5;
+  text-align: left;
+}
+
+.setup-steps button.active {
+  color: #fff;
+  border-color: #b24d34;
+  background: #b24d34;
+}
+
+.setup-steps button.done {
+  color: #fff;
+  border-color: #28524f;
+  background: #28524f;
+}
+
+.setup-steps span {
+  display: grid;
+  width: 26px;
+  aspect-ratio: 1;
+  place-items: center;
+  border-radius: 50%;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.24);
+  font-size: 13px;
+}
+
+.setup-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.setup-actions {
+  justify-content: space-between;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   color: #b24d34;
@@ -844,7 +916,8 @@ small {
 
   .workspace-head,
   .two,
-  .home-grid {
+  .home-grid,
+  .setup-steps {
     grid-template-columns: 1fr;
   }
 
@@ -926,5 +999,9 @@ small {
   .project-list button,
   .module-card button {
     width: auto;
+  }
+
+  .setup-hero {
+    min-height: 220px;
   }
 }

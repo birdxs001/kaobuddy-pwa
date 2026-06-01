@@ -19,6 +19,7 @@ type ProjectTab = "overview" | "materials" | "plan" | "mock" | "module" | "resul
 type ModuleStatus = "todo" | "doing" | "done";
 type ModulePriority = "low" | "medium" | "high";
 type ModuleDifficulty = "low" | "medium" | "high";
+type SetupStep = "intro" | "flow" | "api" | "project";
 type UploadQueueItem = {
   id: string;
   name: string;
@@ -81,6 +82,13 @@ const visibleTabs: { tab: ProjectTab; label: string }[] = [
   { tab: "plan", label: "计划" },
   { tab: "mock", label: "模拟考" },
   { tab: "review", label: "复盘" }
+];
+
+const setupSteps: { step: SetupStep; label: string }[] = [
+  { step: "intro", label: "认识考搭子" },
+  { step: "flow", label: "使用流程" },
+  { step: "api", label: "连接 AI" },
+  { step: "project", label: "创建项目" }
 ];
 
 const knowledgeTerms = [
@@ -511,6 +519,7 @@ export default function App() {
   const [resultNote, setResultNote] = useState<AiNote | null>(null);
   const [status, setStatus] = useState("准备好了。");
   const [busyLabel, setBusyLabel] = useState("");
+  const [setupStep, setSetupStep] = useState<SetupStep>("intro");
 
   async function refresh() {
     const [projectRows, materialRows, noteRows, taskRows, mistakeRows, weakPointRows, mockRows] = await Promise.all([
@@ -638,8 +647,37 @@ export default function App() {
     }
   }
 
+  function goSetupNext() {
+    if (setupStep === "intro") {
+      setSetupStep("flow");
+      setStatus("先看一遍流程，然后连接 AI。");
+      return;
+    }
+    if (setupStep === "flow") {
+      setSetupStep("api");
+      setStatus("下一步先填 API Key。");
+      return;
+    }
+    if (setupStep === "api") {
+      if (!requireApi()) return;
+      storage.saveApiConfig(apiConfig);
+      setSetupStep("project");
+      setStatus("AI 配置已保存，现在创建第一个考试项目。");
+    }
+  }
+
+  function goSetupBack() {
+    if (setupStep === "project") setSetupStep("api");
+    if (setupStep === "api") setSetupStep("flow");
+    if (setupStep === "flow") setSetupStep("intro");
+  }
+
   async function createProject(event: FormEvent) {
     event.preventDefault();
+    if (!projects.length && !apiConfig.api_key.trim()) {
+      setSetupStep("api");
+      return setStatus("先填 API Key，再创建第一个项目。");
+    }
     if (!projectDraft.subject.trim()) return setStatus("科目要填一下，比如高数、法考、期末英语。");
     if (!projectDraft.exam_date) return setStatus("考试日期也要填，不然我没法算倒计时。");
     const timestamp = nowIso();
@@ -1068,32 +1106,86 @@ export default function App() {
       <label>考试日期<input type="date" value={projectDraft.exam_date} onChange={(event) => setProjectDraft({ ...projectDraft, exam_date: event.target.value })} /></label>
       <label>目标分数<input value={projectDraft.target_score} onChange={(event) => setProjectDraft({ ...projectDraft, target_score: event.target.value })} placeholder="可不填" /></label>
       <label>薄弱项<textarea value={projectDraft.weak_points} onChange={(event) => setProjectDraft({ ...projectDraft, weak_points: event.target.value })} placeholder="可不填，后面可以让 AI 推断" /></label>
-      <button type="submit">{projects.length ? "保存项目" : "开始建立项目"}</button>
+      <button type="submit">{projects.length ? "保存项目" : "进入考搭子"}</button>
     </form>
   );
+
+  const setupIndex = setupSteps.findIndex((item) => item.step === setupStep);
 
   if (!projects.length) {
     return (
       <main className="home">
-        <section className="home-hero app-section">
-          <p className="eyebrow">KaoBuddy</p>
-          <h1>考搭子</h1>
-          <p>用你自己的 AI API，把课件、笔记、PDF、手写资料和视频字幕整理成考前复习计划，再按知识模块一点点推进。</p>
-        </section>
         <div className={statusClass} aria-live="polite">{statusMessage}</div>
-        <section className="home-grid app-section">
-          <div className="panel intro-panel">
-            <h2>它怎么用</h2>
-            <ol>
-              <li>先连接自己的 AI。</li>
-              <li>创建一个考试项目。</li>
-              <li>把资料放进项目里。</li>
-              <li>让 AI 生成知识模块计划。</li>
-              <li>拖动模块顺序，完成一个勾一个。</li>
-            </ol>
+        <section className="setup-shell app-section">
+          <div className="setup-hero">
+            <p className="eyebrow">KaoBuddy</p>
+            <h1>考搭子</h1>
+            <p>用你自己的 AI API，把课件、笔记、PDF、手写资料和视频字幕整理成考前复习计划，再按知识模块一点点推进。</p>
           </div>
-          {apiPanel}
-          {projectForm}
+
+          <nav className="setup-steps" aria-label="初始化进度">
+            {setupSteps.map((item, index) => (
+              <button
+                key={item.step}
+                className={index === setupIndex ? "active" : index < setupIndex ? "done" : ""}
+                onClick={() => {
+                  if (index <= setupIndex) setSetupStep(item.step);
+                  if (index > setupIndex) setStatus("先完成当前步骤，再进入下一步。");
+                }}
+                type="button"
+              >
+                <span>{index + 1}</span>
+                {item.label}
+              </button>
+            ))}
+          </nav>
+
+          {setupStep === "intro" && (
+            <div className="panel setup-panel">
+              <h2>考搭子能做什么</h2>
+              <p>它是一个本地备考助手。你把课件、教材、笔记、手写资料或视频字幕放进来，它会帮你整理资料、拆知识点、生成复习计划、做模块练习和模拟考。</p>
+              <p>API Key 只保存在你当前浏览器里。KaoBuddy 不做账号、不做云同步，也不会把你的 Key 存到远程服务器。</p>
+              <div className="actions">
+                <button type="button" onClick={goSetupNext}>下一步：看使用流程</button>
+              </div>
+            </div>
+          )}
+
+          {setupStep === "flow" && (
+            <div className="panel setup-panel intro-panel">
+              <h2>使用流程</h2>
+              <ol>
+                <li>先连接自己的 AI API。</li>
+                <li>创建一个考试项目，比如操作系统、高数、法考。</li>
+                <li>把课件、教材、笔记和视频资料放进项目。</li>
+                <li>让 AI 生成知识模块计划，而不是一长串日期任务。</li>
+                <li>按模块学习、拖动顺序、完成后标记，最后用模拟考和复盘查漏补缺。</li>
+              </ol>
+              <div className="actions">
+                <button type="button" className="secondary" onClick={goSetupBack}>上一步</button>
+                <button type="button" onClick={goSetupNext}>下一步：连接 AI</button>
+              </div>
+            </div>
+          )}
+
+          {setupStep === "api" && (
+            <div className="setup-panel">
+              {apiPanel}
+              <div className="actions setup-actions">
+                <button type="button" className="secondary" onClick={goSetupBack}>上一步</button>
+                <button type="button" onClick={goSetupNext}>下一步：创建项目</button>
+              </div>
+            </div>
+          )}
+
+          {setupStep === "project" && (
+            <div className="setup-panel">
+              {projectForm}
+              <div className="actions setup-actions">
+                <button type="button" className="secondary" onClick={goSetupBack}>上一步</button>
+              </div>
+            </div>
+          )}
         </section>
       </main>
     );
