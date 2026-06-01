@@ -99,6 +99,7 @@ def test_module_practice_prompt_focuses_on_current_module(monkeypatch):
     captured = {}
 
     async def fake_chat_completion(api_config, messages):
+        captured["max_tokens"] = api_config.max_tokens
         captured["user"] = messages[1].content
         return "1. 进程有哪些基本状态？\n参考答案：就绪、运行、阻塞。"
 
@@ -130,6 +131,9 @@ def test_module_practice_prompt_focuses_on_current_module(monkeypatch):
     )
 
     assert response.status_code == 200
+    assert captured["max_tokens"] == 5000
     assert "当前知识点：进程" in captured["user"]
     assert "只围绕这个知识点" in captured["user"]
+    assert "生成 3 道" in captured["user"]
+    assert "完整解析" in captured["user"]
     assert "PCB、进程状态、状态转换" in captured["user"]

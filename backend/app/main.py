@@ -102,6 +102,13 @@ async def _run_ai(request: AiRequest, system_prompt: str, task_prompt: str) -> A
     return AiResponse(content=content)
 
 
+def _request_with_min_tokens(request: AiRequest, minimum: int) -> AiRequest:
+    current = request.api_config.max_tokens
+    if current >= minimum:
+        return request
+    return request.model_copy(update={"api_config": request.api_config.model_copy(update={"max_tokens": minimum})})
+
+
 @app.post("/api/ai/test", response_model=AiResponse)
 async def test_ai(request: ChatCompletionRequest) -> AiResponse:
     messages = request.messages or [
@@ -151,12 +158,13 @@ async def practice(request: PracticeRequest) -> AiResponse:
 @app.post("/api/ai/module-practice", response_model=AiResponse)
 async def module_practice(request: ModulePracticeRequest) -> AiResponse:
     return await _run_ai(
-        request,
+        _request_with_min_tokens(request, 5000),
         MODULE_PRACTICE_SYSTEM_PROMPT,
         (
             f"当前知识点：{request.module_title}\n"
             f"考察内容：{request.exam_points or '按资料判断'}\n"
-            "请只围绕这个知识点生成 3 到 5 道模块内模拟题，包含题目、参考答案和简短解析。"
+            "请只围绕这个知识点生成 3 道模块内模拟题，包含题目、参考答案和完整解析。"
+            "如果题目里出现表格，请直接排成清楚的表格。不要在解析中途停止。"
         ),
     )
 

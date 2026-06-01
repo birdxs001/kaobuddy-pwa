@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { importVideo, recognizeHandwriting, runAi, testApiConfig } from "./api";
+import { importVideo, recognizeHandwriting, runAi, runModulePractice, testApiConfig } from "./api";
 import { documentPlaceholder, readAsDataUrl, readPdfText, readTextFile } from "./fileReaders";
 import { createId, storage } from "./storage";
 import type {
@@ -1030,16 +1030,13 @@ export default function App() {
     setBusyLabel(`正在生成「${displayModuleTitle(module.title, module.note)}」的模拟题...`);
     try {
       const moduleTitle = displayModuleTitle(module.title, module.note);
-      const content = await runAi("practice", {
+      const content = await runModulePractice({
         api_config: apiConfig,
         project: toProjectPayload(activeProject!),
         materials: scopedMaterials.map(({ title, kind, content }) => ({ title, kind, content })),
-        extra: [
-          extra,
-          `当前知识点：${moduleTitle}`,
-          `考察内容：${module.exam_points || module.note || "请根据资料判断。"}`,
-          "请只围绕这个知识点生成 3 到 5 道模块内模拟题，包含题目、参考答案和简短解析，不要扩展到其它知识点。"
-        ].filter(Boolean).join("\n")
+        extra,
+        module_title: moduleTitle,
+        exam_points: module.exam_points || module.note || "请根据资料判断。"
       });
       const updated = {
         ...module,
