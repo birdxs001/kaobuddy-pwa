@@ -238,6 +238,12 @@ function renderHumanText(text: string) {
   );
 }
 
+function statusTone(message: string) {
+  if (/失败|错误|没|先|不能|要填|不足|无响应|失败|异常/.test(message)) return "danger";
+  if (/已|完成|成功|保存|加入|导入|生成|记录/.test(message)) return "success";
+  return "neutral";
+}
+
 function taskOrder(task: StudyTask, fallback: number) {
   return typeof task.order === "number" ? task.order : fallback;
 }
@@ -572,6 +578,8 @@ export default function App() {
   const latestPlanNote = scopedNotes.find((note) => note.mode === "plan");
   const latestMockNote = scopedNotes.find((note) => note.mode === "mock");
   const currentResultNote = resultNote || scopedNotes[0] || null;
+  const statusMessage = busy ? busyLabel : status;
+  const statusClass = `status ${busy ? "loading" : statusTone(statusMessage)}`;
 
   function projectProgress(projectId: string) {
     const projectModules = tasks.filter((task) => task.project_id === projectId && isStudyModule(task));
@@ -1067,7 +1075,7 @@ export default function App() {
           <h1>考搭子</h1>
           <p>用你自己的 AI API，把课件、笔记、PDF、手写资料和视频字幕整理成考前复习计划，再按知识模块一点点推进。</p>
         </section>
-        <div className={busy ? "status loading" : "status"} aria-live="polite">{busy ? busyLabel : status}</div>
+        <div className={statusClass} aria-live="polite">{statusMessage}</div>
         <section className="home-grid app-section">
           <div className="panel intro-panel">
             <h2>它怎么用</h2>
@@ -1130,7 +1138,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className={busy ? "status loading" : "status"} aria-live="polite">{busy ? busyLabel : status}</div>
+        <div className={statusClass} aria-live="polite">{statusMessage}</div>
 
         <nav className="tabs">
           {visibleTabs.map(({ tab, label }) => (

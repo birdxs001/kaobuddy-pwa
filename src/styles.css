@@ -180,19 +180,45 @@ label {
 }
 
 .status {
-  position: relative;
-  z-index: 10;
-  margin: 16px 0;
-  padding: 12px 14px;
+  position: fixed;
+  top: 12px;
+  left: max(20px, calc((100vw - 1180px) / 2 + 20px));
+  right: max(20px, calc((100vw - 1180px) / 2 + 20px));
+  z-index: 80;
+  min-height: 46px;
+  padding: 12px 16px;
   border-left: 4px solid #28524f;
   background: #e7eee9;
-  border-radius: 6px;
+  border-radius: 8px;
+  box-shadow: 0 12px 26px rgba(43, 50, 41, 0.14);
   line-height: 1.5;
+  backdrop-filter: blur(8px);
+}
+
+.app-shell .status {
+  left: 304px;
+  right: 24px;
+}
+
+.status.neutral {
+  border-color: #28524f;
+  background: rgba(231, 238, 233, 0.96);
+}
+
+.status.success {
+  border-color: #2d6657;
+  background: rgba(225, 239, 229, 0.96);
+}
+
+.status.danger {
+  border-color: #b24d34;
+  background: rgba(250, 226, 218, 0.97);
+  color: #5f2519;
 }
 
 .status.loading {
   border-color: #b24d34;
-  background: #f6e8df;
+  background: rgba(246, 232, 223, 0.97);
 }
 
 .status.loading::after {
@@ -811,6 +837,11 @@ small {
     width: 100%;
   }
 
+  .app-shell .status {
+    left: 14px;
+    right: 14px;
+  }
+
   .workspace-head,
   .two,
   .home-grid {
@@ -849,6 +880,13 @@ small {
   .workspace,
   .sidebar {
     padding: 14px;
+  }
+
+  .home .status,
+  .app-shell .status {
+    top: 10px;
+    left: 10px;
+    right: 10px;
   }
 
   h1,
