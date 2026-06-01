@@ -69,13 +69,6 @@ const emptyWeakPoint: Pick<WeakPoint, "title" | "evidence" | "severity"> = {
   severity: "medium"
 };
 
-const emptyMock = {
-  title: "",
-  score: "",
-  duration_minutes: 30,
-  feedback: ""
-};
-
 const moduleColumns: { status: ModuleStatus; title: string; hint: string }[] = [
   { status: "todo", title: "待学习", hint: "还没开始的知识点" },
   { status: "doing", title: "学习中", hint: "正在学的内容" },
@@ -260,6 +253,8 @@ function toProjectPayload(project: StudyProject) {
 }
 
 function parsePriority(line: string): ModulePriority {
+  if (/high/i.test(line)) return "high";
+  if (/low/i.test(line)) return "low";
   if (/重要排名\s*[:：]?\s*[1-3]\b|高|重要|核心|优先/.test(line)) return "high";
   if (/低|选学|有空/.test(line)) return "low";
   return "medium";
@@ -269,6 +264,8 @@ function parseDifficulty(text: string): ModuleDifficulty {
   const cleaned = stripMarkdown(text);
   const match = cleaned.match(/难度\s*[:：]\s*(低|中|高|简单|一般|困难)/);
   const value = match?.[1] || cleaned;
+  if (/high/i.test(value)) return "high";
+  if (/low/i.test(value)) return "low";
   if (/高|困难|难/.test(value)) return "high";
   if (/低|简单|易/.test(value)) return "low";
   return "medium";
@@ -331,7 +328,7 @@ function extractModuleTitle(line: string) {
 
 function isGenericModuleText(text: string) {
   const cleaned = stripMarkdown(text).replace(/\s+/g, "");
-  return /第\d+天|每日任务|天数|全真模拟|模拟测试|模拟卷|模考|错题回顾|串联|综合复习|复习计划|练习安排|学习安排|高效利用时间|聚焦高频|高频考点|补充要求|完成标准|建议通读|选择题相关模块/.test(cleaned);
+  return /第\d+天|每日任务|天数|全真模拟|模拟测试|模拟卷|模考|错题回顾|串联|综合复习|复习计划|练习安排|学习安排|高效利用时间|聚焦高频|高频考点|补充要求|建议通读|选择题相关模块/.test(cleaned);
 }
 
 function isGenericModuleTitle(title: string) {
@@ -365,7 +362,7 @@ function parseModulesFromPlan(content: string, projectId: string, noteId: string
           const note = String(record.note || record.reason || record.description || record.practice || "");
           const examPoints = String(record.exam_points || record.examPoints || record.points || record.content || record.test_points || note || "");
           const title = extractModuleTitle(rawTitle) || extractModuleTitle(note) || extractModuleTitle(examPoints);
-          if (!title || isGenericModuleTitle(title) || isGenericModuleTitle(rawTitle) || isGenericModuleText(`${rawTitle}\n${note}\n${examPoints}`)) return [];
+          if (!title || isGenericModuleTitle(title) || isGenericModuleTitle(rawTitle)) return [];
           if (!title || seen.has(title)) return [];
           seen.add(title);
           const rawMinutes = Number(record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes);
@@ -395,6 +392,47 @@ function parseModulesFromPlan(content: string, projectId: string, noteId: string
       // Fall back to line parsing below.
     }
   }
+  const blockText = stripMarkdown(content);
+  const moduleBlocks = blockText
+    .split(/(?=模块\s*[:：])/)
+    .map((block) => block.trim())
+    .filter((block) => /^模块\s*[:：]/.test(block));
+  if (moduleBlocks.length) {
+    const seen = new Set<string>();
+    return moduleBlocks.flatMap((block, index) => {
+      const title = extractModuleTitle(block);
+      if (!title || seen.has(title) || isGenericModuleTitle(title)) return [];
+      seen.add(title);
+      const minutesMatch = block.match(/(?:预计(?:完成|学习)?时间|预计时间)\s*[:：]?\s*(\d+)\s*(分钟|min)/i);
+      const hourMatch = block.match(/(\d+(?:\.\d+)?)\s*(小时|h)/i);
+      const estimatedMinutes = minutesMatch
+        ? normalizeMinutes(Number(minutesMatch[1]))
+        : hourMatch
+          ? normalizeMinutes(Number(hourMatch[1]) * 60)
+          : 45;
+      const rank = extractNumber(block, [/重要(?:程度)?排名\s*[:：]?\s*(\d+)/, /排名\s*[:：]?\s*(\d+)/]);
+      const examPoints = extractField(block, ["说明", "考察内容", "考查内容", "考点内容", "考试内容", "会考什么", "重点"]);
+      return [{
+        id: createId("module"),
+        project_id: projectId,
+        title,
+        date: dateKey(),
+        estimated_minutes: estimatedMinutes,
+        status: "todo",
+        module_status: "todo",
+        priority: parsePriority(block),
+        difficulty: parseDifficulty(block),
+        importance_rank: rank || existingCount + index + 1,
+        exam_points: examPoints,
+        order: existingCount + index,
+        source_note_id: noteId,
+        note: block,
+        created_at: nowIso(),
+        updated_at: nowIso()
+      }];
+    });
+  }
+
   const rawLines = content
     .split(/\n+/)
     .map((line) => stripMarkdown(line).replace(/^[\s\-*•\d.、)]+/, "").trim())
@@ -460,7 +498,7 @@ export default function App() {
   const [moduleDraft, setModuleDraft] = useState(emptyModule);
   const [mistakeDraft, setMistakeDraft] = useState(emptyMistake);
   const [weakPointDraft, setWeakPointDraft] = useState(emptyWeakPoint);
-  const [mockDraft, setMockDraft] = useState(emptyMock);
+  const [mockQuestionTypes, setMockQuestionTypes] = useState("");
   const [draggingModuleId, setDraggingModuleId] = useState("");
   const [selectedModuleId, setSelectedModuleId] = useState("");
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
@@ -752,7 +790,7 @@ export default function App() {
     }
   }
 
-  async function runMode(mode: "plan" | "teach" | "practice" | "mock-exam", title: string) {
+  async function runMode(mode: "plan" | "teach" | "practice" | "mock-exam", title: string, extraOverride?: string) {
     if (!requireProject() || !requireApi()) return;
     if (!scopedMaterials.length && mode === "plan") {
       setStatus("先导入资料，再生成知识点模块。现在不会按空资料乱编计划。");
@@ -765,7 +803,7 @@ export default function App() {
         api_config: apiConfig,
         project: toProjectPayload(activeProject!),
         materials: scopedMaterials.map(({ title, kind, content }) => ({ title, kind, content })),
-        extra
+        extra: extraOverride ?? extra
       });
       const note: AiNote = {
         id: createId("note"),
@@ -776,6 +814,18 @@ export default function App() {
         created_at: nowIso()
       };
       await storage.saveNote(note);
+      if (mode === "mock-exam") {
+        await storage.saveMockAttempt({
+          id: createId("mock"),
+          project_id: activeProject!.id,
+          title: `${title} ${new Date().toLocaleDateString("zh-CN")}`,
+          score: "待完成",
+          duration_minutes: 30,
+          feedback: stripMarkdown(content).slice(0, 420),
+          source_note_id: note.id,
+          created_at: nowIso()
+        });
+      }
       setResultNote(note);
       setActiveTab("result");
       setStatus(`${title} 已生成，已经打开结果页。`);
@@ -791,8 +841,6 @@ export default function App() {
     if (!activeProject) return;
     const parsed = parseModulesFromPlan(note.content, activeProject.id, note.id, visibleModules.length);
     if (!parsed.length) return setStatus("这份计划没拆出进程、线程这类明确知识点名，可以重新生成或手动新增模块。");
-    const ok = window.confirm(`我拆出了 ${parsed.length} 个知识模块，要加入计划看板吗？`);
-    if (!ok) return;
     await Promise.all(parsed.map((item, index) => storage.saveTask({
       ...item,
       importance_rank: item.importance_rank || index + 1,
@@ -971,24 +1019,6 @@ export default function App() {
     });
     setWeakPointDraft(emptyWeakPoint);
     setStatus("薄弱项已记录。");
-    await refresh();
-  }
-
-  async function saveMock(event: FormEvent) {
-    event.preventDefault();
-    if (!requireProject()) return;
-    if (!mockDraft.title.trim() || !mockDraft.score.trim()) return setStatus("模考标题和分数都要填。");
-    await storage.saveMockAttempt({
-      id: createId("mock"),
-      project_id: activeProject!.id,
-      title: mockDraft.title.trim(),
-      score: mockDraft.score.trim(),
-      duration_minutes: normalizeMinutes(mockDraft.duration_minutes),
-      feedback: mockDraft.feedback.trim() || "暂无反馈",
-      created_at: nowIso()
-    });
-    setMockDraft(emptyMock);
-    setStatus("模考记录已保存。");
     await refresh();
   }
 
@@ -1266,9 +1296,19 @@ export default function App() {
           <section className="grid two app-section">
             <div className="panel">
               <h2>模拟考</h2>
+              <label>想生成什么题型<textarea value={mockQuestionTypes} onChange={(event) => setMockQuestionTypes(event.target.value)} placeholder="比如 选择题、简答题、计算题；不填就让 AI 自己安排。" /></label>
               <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 题量少一点，重点考进程和文件管理。" /></label>
               <div className="actions wrap">
-                <button onClick={() => runMode("mock-exam", "模拟考")} disabled={busy}>生成模拟考</button>
+                <button
+                  onClick={() => runMode(
+                    "mock-exam",
+                    "模拟考",
+                    [mockQuestionTypes.trim() ? `题型要求：${mockQuestionTypes.trim()}` : "", extra.trim()].filter(Boolean).join("\n")
+                  )}
+                  disabled={busy}
+                >
+                  生成模拟考
+                </button>
                 {latestMockNote && (
                   <button
                     className="secondary"
@@ -1283,17 +1323,10 @@ export default function App() {
               </div>
             </div>
             <div className="panel">
-              <h2>模考记录</h2>
-              <form className="stack" onSubmit={saveMock}>
-                <input value={mockDraft.title} onChange={(event) => setMockDraft({ ...mockDraft, title: event.target.value })} placeholder="模考标题" />
-                <input value={mockDraft.score} onChange={(event) => setMockDraft({ ...mockDraft, score: event.target.value })} placeholder="分数，比如 78/100" />
-                <input type="number" min="10" value={mockDraft.duration_minutes} onChange={(event) => setMockDraft({ ...mockDraft, duration_minutes: Number(event.target.value) })} />
-                <textarea value={mockDraft.feedback} onChange={(event) => setMockDraft({ ...mockDraft, feedback: event.target.value })} placeholder="模考反馈" />
-                <button type="submit">保存模考记录</button>
-              </form>
+              <h2>已生成的模拟考</h2>
               <div className="list compact">
                 {scopedMocks.map((item) => <article key={item.id} className="item"><strong>{item.title}</strong><small>{item.score} · {item.duration_minutes} 分钟</small><p>{item.feedback}</p></article>)}
-                {!scopedMocks.length && <p className="muted">还没有模考记录。</p>}
+                {!scopedMocks.length && <p className="muted">生成模拟考后，这里会自动留下记录。</p>}
               </div>
             </div>
           </section>
@@ -1362,11 +1395,6 @@ export default function App() {
                   setActiveTab("review");
                   setStatus("已把模拟卷放到错题草稿，可以改完保存。");
                 }}>放进错题草稿</button>}
-                {currentResultNote?.mode === "mock" && <button onClick={() => {
-                  setMockDraft({ title: currentResultNote.title, score: "", duration_minutes: 30, feedback: currentResultNote.content.slice(0, 420) });
-                  setActiveTab("mock");
-                  setStatus("已把模考反馈放到记录草稿，补个分数就能保存。");
-                }}>放进模考记录</button>}
                 <button className="secondary" onClick={() => setActiveTab(currentResultNote?.mode === "mock" ? "mock" : "plan")}>
                   {currentResultNote?.mode === "mock" ? "回到模拟考" : "回到计划页调整"}
                 </button>
