@@ -4,8 +4,8 @@
   "description": "手机可用的免费备考 PWA，用自己的 API 做计划、学习、刷题和模考。",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f6f5ef",
-  "theme_color": "#28524f",
+  "background_color": "#edf3ef",
+  "theme_color": "#194f46",
   "icons": [
     {
       "src": "/icons/icon.svg",

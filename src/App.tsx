@@ -1,4 +1,32 @@
 import { FormEvent, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import {
+  ArrowLeft,
+  BookOpen,
+  Brain,
+  Cards,
+  ChartDonut,
+  CheckCircle,
+  ClipboardText,
+  ClockCountdown,
+  DownloadSimple,
+  FileArrowUp,
+  GearSix,
+  Kanban,
+  Lightning,
+  ListChecks,
+  Notebook,
+  PencilSimple,
+  PlusCircle,
+  ShieldCheck,
+  Sparkle,
+  StackPlus,
+  Target,
+  Timer,
+  Trash,
+  UploadSimple,
+  Video
+} from "@phosphor-icons/react";
 import { importVideo, recognizeHandwriting, runAi, runMemorize, runModulePractice, testApiConfig } from "./api";
 import { readAsDataUrl, readDocumentText, readPdfText, readTextFile } from "./fileReaders";
 import { exportMockExamPdf } from "./pdfExport";
@@ -91,6 +119,23 @@ const setupSteps: { step: SetupStep; label: string }[] = [
   { step: "api", label: "连接 AI" },
   { step: "project", label: "创建项目" }
 ];
+
+const tabIcons: Record<ProjectTab, typeof ChartDonut> = {
+  overview: ChartDonut,
+  materials: FileArrowUp,
+  plan: Kanban,
+  mock: ClipboardText,
+  module: Brain,
+  result: Sparkle,
+  review: Cards
+};
+
+const setupIcons: Record<SetupStep, typeof Sparkle> = {
+  intro: Sparkle,
+  flow: ListChecks,
+  api: ShieldCheck,
+  project: Target
+};
 
 const knowledgeTerms = [
   "操作系统引论",
@@ -344,6 +389,40 @@ function priorityLabel(value?: ModulePriority) {
   if (value === "high") return "高重要";
   if (value === "low") return "低重要";
   return "中重要";
+}
+
+function BrandMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={compact ? "brand-lockup compact" : "brand-lockup"}>
+      <span className="logo-mark" aria-hidden="true">
+        <span>K</span>
+      </span>
+      <span>
+        <strong>考搭子</strong>
+        <small>KaoBuddy</small>
+      </span>
+    </div>
+  );
+}
+
+function StatusToast({ className, message }: { className: string; message: string }) {
+  const Icon = className.includes("danger") ? Lightning : className.includes("success") ? CheckCircle : Sparkle;
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={message}
+        className={className}
+        aria-live="polite"
+        initial={{ opacity: 0, y: -10, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -8, scale: 0.98 }}
+        transition={{ duration: 0.18 }}
+      >
+        <Icon size={18} weight="duotone" />
+        <span>{message}</span>
+      </motion.div>
+    </AnimatePresence>
+  );
 }
 
 function extractNumber(text: string, patterns: RegExp[]) {
@@ -1194,7 +1273,13 @@ export default function App() {
 
   const apiPanel = (
     <form className="panel api-panel" onSubmit={saveApi}>
-      <h2>连接 AI</h2>
+      <div className="panel-heading">
+        <span className="heading-icon"><ShieldCheck size={20} weight="duotone" /></span>
+        <div>
+          <h2>连接 AI</h2>
+          <p>Key 只留在当前浏览器里，后端只负责临时转发。</p>
+        </div>
+      </div>
       <label>
         平台
         <select value={apiConfig.provider_name} onChange={(event) => updatePreset(event.target.value)}>
@@ -1213,21 +1298,27 @@ export default function App() {
         </div>
       )}
       <div className="actions">
-        <button type="submit">保存配置</button>
-        <button type="button" className="secondary" onClick={testApi} disabled={busy}>测试连接</button>
+        <button type="submit"><GearSix size={18} weight="bold" />保存配置</button>
+        <button type="button" className="secondary" onClick={testApi} disabled={busy}><Lightning size={18} weight="bold" />测试连接</button>
       </div>
     </form>
   );
 
   const projectForm = (
     <form className="panel project-form" onSubmit={createProject}>
-      <h2>{editingProjectId ? "编辑项目信息" : projects.length ? "新建项目" : "创建第一个项目"}</h2>
+      <div className="panel-heading">
+        <span className="heading-icon"><Target size={20} weight="duotone" /></span>
+        <div>
+          <h2>{editingProjectId ? "编辑项目信息" : projects.length ? "新建项目" : "创建第一个项目"}</h2>
+          <p>先把考试定下来，后面的计划才不会乱跑。</p>
+        </div>
+      </div>
       <label>科目<input value={projectDraft.subject} onChange={(event) => setProjectDraft({ ...projectDraft, subject: event.target.value })} placeholder="比如 高数 / 法考 / 期末英语" /></label>
       <label>考试日期<input type="date" value={projectDraft.exam_date} onChange={(event) => setProjectDraft({ ...projectDraft, exam_date: event.target.value })} /></label>
       <label>目标分数<input value={projectDraft.target_score} onChange={(event) => setProjectDraft({ ...projectDraft, target_score: event.target.value })} placeholder="可不填" /></label>
       <label>薄弱项<textarea value={projectDraft.weak_points} onChange={(event) => setProjectDraft({ ...projectDraft, weak_points: event.target.value })} placeholder="可不填，后面可以让 AI 推断" /></label>
       <div className="actions wrap">
-        <button type="submit">{editingProjectId ? "保存修改" : projects.length ? "保存项目" : "进入考搭子"}</button>
+        <button type="submit"><CheckCircle size={18} weight="bold" />{editingProjectId ? "保存修改" : projects.length ? "保存项目" : "进入考搭子"}</button>
         {editingProjectId && (
           <button
             type="button"
@@ -1238,7 +1329,7 @@ export default function App() {
               setShowNewProject(false);
             }}
           >
-            取消
+            <ArrowLeft size={18} weight="bold" />取消
           </button>
         )}
       </div>
@@ -1249,92 +1340,128 @@ export default function App() {
 
   if (!projects.length || showSetup) {
     return (
-      <main className="home">
-        <div className={statusClass} aria-live="polite">{statusMessage}</div>
-        <section className="setup-shell app-section">
-          <div className="setup-hero">
-            <p className="eyebrow">KaoBuddy · 一款专注于临时抱佛脚的项目</p>
-            <h1>考搭子</h1>
-            <p>用你自己的 AI API，把课件、笔记、PDF、手写资料和视频字幕整理成考前复习计划，再按知识模块一点点推进。</p>
-            {!!projects.length && (
-              <button
-                className="secondary setup-return"
-                type="button"
-                onClick={() => {
-                  setShowSetup(false);
-                  setStatus("已回到项目工作区。");
-                }}
-              >
-                回到当前项目
-              </button>
-            )}
+      <motion.main className="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.24 }}>
+        <StatusToast className={statusClass} message={statusMessage} />
+        <section className="home-hero app-section">
+          <div className="hero-copy">
+            <BrandMark />
+            <p className="eyebrow">本地备考工作台</p>
+            <h1>临时抱佛脚，也要有章法。</h1>
+            <p>用你自己的 AI API，把课件、PDF、手写笔记和视频字幕整理成知识模块、练习和模拟考。资料在本地，节奏你来掌握。</p>
+            <div className="hero-actions">
+              <button type="button" onClick={() => setSetupStep("api")}><ShieldCheck size={18} weight="bold" />先连接 AI</button>
+              <button type="button" className="secondary" onClick={() => setSetupStep("project")}><Target size={18} weight="bold" />创建项目</button>
+              {!!projects.length && (
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() => {
+                    setShowSetup(false);
+                    setStatus("已回到项目工作区。");
+                  }}
+                >
+                  <ArrowLeft size={18} weight="bold" />回到当前项目
+                </button>
+              )}
+            </div>
           </div>
+          <div className="hero-command" aria-label="KaoBuddy 使用流程">
+            <div className="command-topline">
+              <span>考前闭环</span>
+              <strong>资料进来，计划出去</strong>
+            </div>
+            <div className="command-list">
+              <span><FileArrowUp size={18} weight="duotone" />导入课件、笔记、视频字幕</span>
+              <span><Brain size={18} weight="duotone" />拆成能学的知识模块</span>
+              <span><ClipboardText size={18} weight="duotone" />刷题、模考、查漏</span>
+              <span><Cards size={18} weight="duotone" />临考前一个个斩掉</span>
+            </div>
+          </div>
+        </section>
 
+        <section className="setup-shell app-section">
           <nav className="setup-steps" aria-label="初始化进度">
-            {setupSteps.map((item, index) => (
-              <button
-                key={item.step}
-                className={index === setupIndex ? "active" : index < setupIndex ? "done" : ""}
-                onClick={() => {
-                  if (index <= setupIndex) setSetupStep(item.step);
-                  if (index > setupIndex) setStatus("先完成当前步骤，再进入下一步。");
-                }}
-                type="button"
-              >
-                <span>{index + 1}</span>
-                {item.label}
-              </button>
-            ))}
+            {setupSteps.map((item, index) => {
+              const StepIcon = setupIcons[item.step];
+              return (
+                <button
+                  key={item.step}
+                  className={index === setupIndex ? "active" : index < setupIndex ? "done" : ""}
+                  onClick={() => {
+                    if (index <= setupIndex) setSetupStep(item.step);
+                    if (index > setupIndex) setStatus("先完成当前步骤，再进入下一步。");
+                  }}
+                  type="button"
+                >
+                  <span><StepIcon size={18} weight="duotone" /></span>
+                  {item.label}
+                </button>
+              );
+            })}
           </nav>
 
-          {setupStep === "intro" && (
-            <div className="panel setup-panel">
-              <h2>考搭子能做什么</h2>
-              <p>它是一个本地备考助手。你把课件、教材、笔记、手写资料或视频字幕放进来，它会帮你整理资料、拆知识点、生成复习计划、做模块练习和模拟考。</p>
-              <p>API Key 只保存在你当前浏览器里。KaoBuddy 不做账号、不做云同步，也不会把你的 Key 存到远程服务器。</p>
-              <div className="actions">
-                <button type="button" onClick={goSetupNext}>下一步：看使用流程</button>
-              </div>
-            </div>
-          )}
+          <AnimatePresence mode="wait">
+            {setupStep === "intro" && (
+              <motion.div key="intro" className="panel setup-panel" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.18 }}>
+                <div className="panel-heading">
+                  <span className="heading-icon"><Sparkle size={20} weight="duotone" /></span>
+                  <div>
+                    <h2>考搭子能做什么</h2>
+                    <p>先把混乱的复习材料收起来，再拆成今天真的能推进的动作。</p>
+                  </div>
+                </div>
+                <p>它是一个本地备考助手。你把课件、教材、笔记、手写资料或视频字幕放进来，它会帮你整理资料、拆知识点、生成复习计划、做模块练习和模拟考。</p>
+                <p>API Key 只保存在你当前浏览器里。KaoBuddy 不做账号、不做云同步，也不会把你的 Key 存到远程服务器。</p>
+                <div className="actions">
+                  <button type="button" onClick={goSetupNext}><ListChecks size={18} weight="bold" />下一步：看使用流程</button>
+                </div>
+              </motion.div>
+            )}
 
-          {setupStep === "flow" && (
-            <div className="panel setup-panel intro-panel">
-              <h2>使用流程</h2>
-              <ol>
-                <li>先连接自己的 AI API。</li>
-                <li>创建一个考试项目，比如操作系统、高数、法考。</li>
-                <li>把课件、教材、笔记和视频资料放进项目。</li>
-                <li>让 AI 生成知识模块计划。</li>
-                <li>按模块学习、拖动顺序、完成后标记，最后用模拟考和复盘查漏补缺。</li>
-              </ol>
-              <div className="actions">
-                <button type="button" className="secondary" onClick={goSetupBack}>上一步</button>
-                <button type="button" onClick={goSetupNext}>下一步：连接 AI</button>
-              </div>
-            </div>
-          )}
+            {setupStep === "flow" && (
+              <motion.div key="flow" className="panel setup-panel intro-panel" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.18 }}>
+                <div className="panel-heading">
+                  <span className="heading-icon"><ListChecks size={20} weight="duotone" /></span>
+                  <div>
+                    <h2>使用流程</h2>
+                    <p>按这个顺序走，别一上来就让 AI 空资料乱编。</p>
+                  </div>
+                </div>
+                <ol>
+                  <li>先连接自己的 AI API。</li>
+                  <li>创建一个考试项目，比如操作系统、高数、法考。</li>
+                  <li>把课件、教材、笔记和视频资料放进项目。</li>
+                  <li>让 AI 生成知识模块计划。</li>
+                  <li>按模块学习、拖动顺序、完成后标记，最后用模拟考和复盘查漏补缺。</li>
+                </ol>
+                <div className="actions">
+                  <button type="button" className="secondary" onClick={goSetupBack}><ArrowLeft size={18} weight="bold" />上一步</button>
+                  <button type="button" onClick={goSetupNext}><ShieldCheck size={18} weight="bold" />下一步：连接 AI</button>
+                </div>
+              </motion.div>
+            )}
 
-          {setupStep === "api" && (
-            <div className="setup-panel">
-              {apiPanel}
-              <div className="actions setup-actions">
-                <button type="button" className="secondary" onClick={goSetupBack}>上一步</button>
-                <button type="button" onClick={goSetupNext}>下一步：创建项目</button>
-              </div>
-            </div>
-          )}
+            {setupStep === "api" && (
+              <motion.div key="api" className="setup-panel" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.18 }}>
+                {apiPanel}
+                <div className="actions setup-actions">
+                  <button type="button" className="secondary" onClick={goSetupBack}><ArrowLeft size={18} weight="bold" />上一步</button>
+                  <button type="button" onClick={goSetupNext}><Target size={18} weight="bold" />下一步：创建项目</button>
+                </div>
+              </motion.div>
+            )}
 
-          {setupStep === "project" && (
-            <div className="setup-panel">
-              {projectForm}
-              <div className="actions setup-actions">
-                <button type="button" className="secondary" onClick={goSetupBack}>上一步</button>
-              </div>
-            </div>
-          )}
+            {setupStep === "project" && (
+              <motion.div key="project" className="setup-panel" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.18 }}>
+                {projectForm}
+                <div className="actions setup-actions">
+                  <button type="button" className="secondary" onClick={goSetupBack}><ArrowLeft size={18} weight="bold" />上一步</button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </section>
-      </main>
+      </motion.main>
     );
   }
 
@@ -1342,8 +1469,7 @@ export default function App() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <strong>考搭子</strong>
-          <span>KaoBuddy</span>
+          <BrandMark compact />
         </div>
         <button
           className="secondary"
@@ -1353,7 +1479,7 @@ export default function App() {
             setShowNewProject((value) => !value);
           }}
         >
-          {showNewProject && !editingProjectId ? "收起新建" : "新建项目"}
+          <PlusCircle size={18} weight="bold" />{showNewProject && !editingProjectId ? "收起新建" : "新建项目"}
         </button>
         <button
           className="secondary"
@@ -1364,7 +1490,7 @@ export default function App() {
             setStatus("已打开初始化页面，可以回看流程或调整 API。");
           }}
         >
-          初始化页面
+          <Sparkle size={18} weight="bold" />初始化页面
         </button>
         {showNewProject && <div className="sidebar-form">{projectForm}</div>}
         <div className="project-list">
@@ -1386,8 +1512,8 @@ export default function App() {
                 <small>倒计时 {daysLeft(project.exam_date)} 天 · {projectProgress(project.id)}%</small>
               </button>
               <div className="project-actions">
-                <button className="mini secondary" onClick={() => editProject(project)}>编辑</button>
-                <button className="mini danger" onClick={() => deleteProject(project)}>删除</button>
+                <button className="mini secondary" onClick={() => editProject(project)}><PencilSimple size={15} weight="bold" />编辑</button>
+                <button className="mini danger" onClick={() => deleteProject(project)}><Trash size={15} weight="bold" />删除</button>
               </div>
             </article>
           ))}
@@ -1410,28 +1536,34 @@ export default function App() {
           </div>
         </header>
 
-        <div className={statusClass} aria-live="polite">{statusMessage}</div>
+        <StatusToast className={statusClass} message={statusMessage} />
 
         <nav className="tabs">
-          {visibleTabs.map(({ tab, label }) => (
-            <button key={tab} className={activeTab === tab ? "tab active" : "tab"} onClick={() => setActiveTab(tab)}>{label}</button>
-          ))}
+          {visibleTabs.map(({ tab, label }) => {
+            const TabIcon = tabIcons[tab];
+            return (
+              <button key={tab} className={activeTab === tab ? "tab active" : "tab"} onClick={() => setActiveTab(tab)}>
+                <TabIcon size={17} weight="duotone" />
+                {label}
+              </button>
+            );
+          })}
         </nav>
 
         {activeTab === "overview" && (
           <section className="page-grid app-section">
             <div className="panel metric-panel">
-              <span>考试倒计时</span>
+              <span><ClockCountdown size={18} weight="duotone" />考试倒计时</span>
               <strong>{activeProject ? daysLeft(activeProject.exam_date) : "-"} 天</strong>
               <small>每天不用完美，模块能滚动推进就行。</small>
             </div>
             <div className="panel metric-panel">
-              <span>知识模块</span>
+              <span><BookOpen size={18} weight="duotone" />知识模块</span>
               <strong>{completedModules} / {visibleModules.length}</strong>
               <small>学习进度按已学习模块数量计算。</small>
             </div>
             <div className="panel metric-panel">
-              <span>当前重点</span>
+              <span><Target size={18} weight="duotone" />当前重点</span>
               <strong className="focus-text">{currentFocusModule ? displayModuleTitle(currentFocusModule.title, currentFocusModule.note) : "暂无"}</strong>
               <small>去计划页拖动顺序或标记完成。</small>
             </div>
@@ -1445,14 +1577,19 @@ export default function App() {
                 if (note) { setResultNote(note); setActiveTab("result"); }
               }}
             >
-              <span>最近模考</span>
+              <span><Timer size={18} weight="duotone" />最近模考</span>
               <strong>{scopedMocks[0]?.title || "暂无"}</strong>
               <small>{scopedMocks[0] ? `${scopedMocks[0].duration_minutes} 分钟 · 点击查看` : "模拟考页可以生成模考。"}</small>
             </div>
-            <div className="panel wide">
-              <p style={{ margin: 0, fontSize: "18px", color: "#28524f", lineHeight: 1.8, textAlign: "center", padding: "12px 0" }}>
-                考搭子陪你把知识点一"网"打尽，临时抱佛脚也要抱得有章法。
-              </p>
+            <div className="panel wide next-step-panel">
+              <div>
+                <span className="kind-badge">下一步</span>
+                <h2>{scopedMaterials.length ? "把资料拆成知识模块" : "先把资料放进来"}</h2>
+                <p>{scopedMaterials.length ? "资料库已经有内容了，可以去计划页让 AI 按考点拆模块。" : "先导入课件、教材、手写笔记或视频字幕，考搭子才有东西可拆。"}</p>
+              </div>
+              <button onClick={() => setActiveTab(scopedMaterials.length ? "plan" : "materials")}>
+                <Lightning size={18} weight="bold" />{scopedMaterials.length ? "生成计划" : "去导入资料"}
+              </button>
             </div>
           </section>
         )}
@@ -1460,8 +1597,14 @@ export default function App() {
         {activeTab === "materials" && (
           <section className="grid two app-section">
             <div className="panel">
-              <h2>资料导入</h2>
-              <label className="file primary-upload">批量上传课件 / 教材（PDF / DOC / DOCX）<input type="file" accept=".pdf,.doc,.docx,.odt,.rtf,.txt,.md,.markdown,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" multiple onChange={(event) => handleFiles(event.target.files)} /></label>
+              <div className="panel-heading">
+                <span className="heading-icon"><UploadSimple size={20} weight="duotone" /></span>
+                <div>
+                  <h2>资料导入</h2>
+                  <p>先快速收进资料库，扫描页和复杂图表后面再慢慢补。</p>
+                </div>
+              </div>
+              <label className="file primary-upload"><UploadSimple size={20} weight="bold" />批量上传课件 / 教材（PDF / DOC / DOCX）<input type="file" accept=".pdf,.doc,.docx,.odt,.rtf,.txt,.md,.markdown,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" multiple onChange={(event) => handleFiles(event.target.files)} /></label>
               <p className="hint">默认会快速读取 PDF 文字层，先把资料放进库里。扫描页、图表和公式这类慢识别，后面单独处理，避免上传时卡太久。</p>
               {!!uploadQueue.length && (
                 <div className="upload-queue">
@@ -1474,18 +1617,24 @@ export default function App() {
                 </div>
               )}
               <label>手写笔记说明<input value={handwritingHint} onChange={(event) => setHandwritingHint(event.target.value)} placeholder="比如 第三章极限笔记" /></label>
-              <label className="file">上传手写图片/PDF<input type="file" accept="image/*,.pdf" multiple onChange={(event) => handleHandwriting(event.target.files)} /></label>
+              <label className="file"><Notebook size={18} weight="bold" />上传手写图片/PDF<input type="file" accept="image/*,.pdf" multiple onChange={(event) => handleHandwriting(event.target.files)} /></label>
               <label>B站等视频链接<input value={videoUrl} onChange={(event) => setVideoUrl(event.target.value)} placeholder="https://www.bilibili.com/video/..." /></label>
-              <button onClick={handleVideoImport} disabled={!activeProject || busy}>导入视频字幕</button>
+              <button onClick={handleVideoImport} disabled={!activeProject || busy}><Video size={18} weight="bold" />导入视频字幕</button>
             </div>
             <div className="panel material-library">
-              <h2>资料库</h2>
+              <div className="panel-heading">
+                <span className="heading-icon"><BookOpen size={20} weight="duotone" /></span>
+                <div>
+                  <h2>资料库</h2>
+                  <p>{scopedMaterials.length ? `已经收进 ${scopedMaterials.length} 份资料。` : "还没有资料，先把课件扔进来。"}</p>
+                </div>
+              </div>
               <div className="list material-list">
                 {scopedMaterials.map((item) => (
                   <article key={item.id} className="item material-row">
                     <div className="item-head">
                       <strong>{item.title}</strong>
-                      <button className="mini danger" onClick={() => deleteMaterial(item)}>删除</button>
+                      <button className="mini danger" onClick={() => deleteMaterial(item)}><Trash size={15} weight="bold" />删除</button>
                     </div>
                   </article>
                 ))}
@@ -1498,10 +1647,16 @@ export default function App() {
         {activeTab === "plan" && (
           <section className="app-section">
             <div className="panel plan-actions">
-              <h2>生成知识模块计划</h2>
+              <div className="panel-heading">
+                <span className="heading-icon"><Kanban size={20} weight="duotone" /></span>
+                <div>
+                  <h2>生成知识模块计划</h2>
+                  <p>把资料拆成能拖、能学、能斩的知识点卡片。</p>
+                </div>
+              </div>
               <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 只剩三天，先救选择题相关模块。" /></label>
               <div className="actions wrap">
-                <button onClick={() => runMode("plan", "知识模块计划")} disabled={busy}>生成计划</button>
+                <button onClick={() => runMode("plan", "知识模块计划")} disabled={busy}><StackPlus size={18} weight="bold" />生成计划</button>
                 {latestPlanNote && (
                   <button
                     className="secondary"
@@ -1510,7 +1665,7 @@ export default function App() {
                       setActiveTab("result");
                     }}
                   >
-                    查看计划结果
+                    <Sparkle size={18} weight="bold" />查看计划结果
                   </button>
                 )}
               </div>
@@ -1551,7 +1706,7 @@ export default function App() {
                         {moduleStatus(item) !== "done" && <button className="mini" onClick={(event) => {
                           event.stopPropagation();
                           startModule(item);
-                        }}>点击学习</button>}
+                        }}><Lightning size={15} weight="bold" />点击学习</button>}
                       </article>
                     ))}
                     {!columnModules.length && <span className="empty-slot">拖到这里</span>}
@@ -1561,14 +1716,14 @@ export default function App() {
             </div>
 
             <form className="panel module-form" onSubmit={saveModule}>
-              <h2>手动补充模块</h2>
+              <h2><PlusCircle size={20} weight="duotone" />手动补充模块</h2>
               <input value={moduleDraft.title} onChange={(event) => setModuleDraft({ ...moduleDraft, title: event.target.value })} placeholder="知识点名称，比如 进程、线程、死锁" />
               <select aria-label="难度" value={moduleDraft.difficulty} onChange={(event) => setModuleDraft({ ...moduleDraft, difficulty: event.target.value as ModuleDifficulty })}>
                 <option value="low">难度低</option>
                 <option value="medium">难度中</option>
                 <option value="high">难度高</option>
               </select>
-              <button type="submit">加入计划</button>
+              <button type="submit"><CheckCircle size={18} weight="bold" />加入计划</button>
             </form>
 
           </section>
@@ -1577,7 +1732,13 @@ export default function App() {
         {activeTab === "mock" && (
           <section className="grid two app-section">
             <div className="panel">
-              <h2>模拟考</h2>
+              <div className="panel-heading">
+                <span className="heading-icon"><ClipboardText size={20} weight="duotone" /></span>
+                <div>
+                  <h2>模拟考</h2>
+                  <p>生成一份手机上也能做完的小模考，考完再查漏。</p>
+                </div>
+              </div>
               <label>考试时长（分钟）
                 <input type="number" min={5} max={180} value={mockDuration || ""} placeholder="输入分钟数，如 30" onChange={(event) => setMockDuration(Number(event.target.value))} />
               </label>
@@ -1599,12 +1760,18 @@ export default function App() {
                   }}
                   disabled={busy}
                 >
-                  生成模拟考
+                  <Timer size={18} weight="bold" />生成模拟考
                 </button>
               </div>
             </div>
             <div className="panel">
-              <h2>已生成的模拟考</h2>
+              <div className="panel-heading">
+                <span className="heading-icon"><Notebook size={20} weight="duotone" /></span>
+                <div>
+                  <h2>已生成的模拟考</h2>
+                  <p>{scopedMocks.length ? "点标题可以重命名，点记录可以查看。" : "生成后这里会自动留下记录。"}</p>
+                </div>
+              </div>
               <div className="list compact">
                 {scopedMocks.map((item, index) => {
                   const mockNote = scopedNotes.find((note) => note.id === item.source_note_id);
@@ -1674,7 +1841,7 @@ export default function App() {
                       <span>{moduleStatus(selectedModule) === "done" ? "已学习" : moduleStatus(selectedModule) === "doing" ? "学习中" : "待学习"}</span>
                     </div>
                   </div>
-                  <button className="secondary" onClick={() => setActiveTab("plan")}>回到计划</button>
+                  <button className="secondary" onClick={() => setActiveTab("plan")}><ArrowLeft size={18} weight="bold" />回到计划</button>
                 </div>
 
                 <div className="detail-block">
@@ -1690,7 +1857,7 @@ export default function App() {
                   {selectedModule.explanation ? renderHumanText(selectedModule.explanation) : <p className="muted">需要讲解时，在这里单独生成这个知识点的讲解。</p>}
                   {!selectedModule.explanation && (
                     <div className="actions wrap">
-                      <button onClick={() => generateModuleExplanation(selectedModule)} disabled={busy}>生成讲解</button>
+                      <button onClick={() => generateModuleExplanation(selectedModule)} disabled={busy}><Brain size={18} weight="bold" />生成讲解</button>
                     </div>
                   )}
                 </div>
@@ -1700,16 +1867,16 @@ export default function App() {
                   {selectedModule.practice_questions ? renderHumanText(selectedModule.practice_questions) : <p className="muted">学完这个知识点后，可以生成几道只围绕它的小题。</p>}
                   <div className="actions wrap">
                     <button onClick={() => generateModuleQuestions(selectedModule)} disabled={busy}>
-                      {selectedModule.practice_questions ? "换一批模拟题" : "生成模块模拟题"}
+                      <ClipboardText size={18} weight="bold" />{selectedModule.practice_questions ? "换一批模拟题" : "生成模块模拟题"}
                     </button>
-                    {moduleStatus(selectedModule) !== "done" && <button className="secondary" onClick={() => completeModule(selectedModule)}>完成学习</button>}
+                    {moduleStatus(selectedModule) !== "done" && <button className="secondary" onClick={() => completeModule(selectedModule)}><CheckCircle size={18} weight="bold" />完成学习</button>}
                   </div>
                 </div>
               </div>
             ) : (
               <div className="panel">
                 <p className="muted">先从计划页选择一个知识点模块。</p>
-                <button onClick={() => setActiveTab("plan")}>回到计划</button>
+                <button onClick={() => setActiveTab("plan")}><ArrowLeft size={18} weight="bold" />回到计划</button>
               </div>
             )}
           </section>
@@ -1722,16 +1889,16 @@ export default function App() {
               <h2>{currentResultNote?.title || "AI 结果"}</h2>
               {renderHumanText(currentResultNote?.content || "")}
               <div className="actions wrap">
-                {currentResultNote?.mode === "plan" && <button onClick={() => createModulesFromPlan(currentResultNote)}>确认，拆成模块卡片</button>}
+                {currentResultNote?.mode === "plan" && <button onClick={() => createModulesFromPlan(currentResultNote)}><Kanban size={18} weight="bold" />确认，拆成模块卡片</button>}
                 {currentResultNote?.mode === "practice" && <button onClick={() => {
                   setMistakeDraft({ question: currentResultNote.content.slice(0, 220), reason: "从模拟卷保存", fix: "按 AI 解析复盘" });
                   setActiveTab("review");
                   setStatus("已把模拟卷放到错题草稿，可以改完保存。");
-                }}>放进错题草稿</button>}
+                }}><Notebook size={18} weight="bold" />放进错题草稿</button>}
                 <button className="secondary" onClick={() => setActiveTab(currentResultNote?.mode === "mock" ? "mock" : "plan")}>
-                  {currentResultNote?.mode === "mock" ? "回到模拟考" : "回到计划页调整"}
+                  <ArrowLeft size={18} weight="bold" />{currentResultNote?.mode === "mock" ? "回到模拟考" : "回到计划页调整"}
                 </button>
-                <button className="secondary" onClick={() => setActiveTab("materials")}>继续补资料</button>
+                <button className="secondary" onClick={() => setActiveTab("materials")}><FileArrowUp size={18} weight="bold" />继续补资料</button>
                 {currentResultNote?.mode === "mock" && (
                   <button onClick={async () => {
                     setBusyLabel("正在生成 PDF...");
@@ -1743,7 +1910,7 @@ export default function App() {
                     } finally {
                       setBusyLabel("");
                     }
-                  }} disabled={busy}>下载 PDF</button>
+                  }} disabled={busy}><DownloadSimple size={18} weight="bold" />下载 PDF</button>
                 )}
               </div>
             </div>
@@ -1753,8 +1920,13 @@ export default function App() {
         {activeTab === "review" && !memorizeModuleId && (
           <section className="app-section">
             <div className="panel">
-              <h2>临考速背</h2>
-              <p className="hint">按重要程度排列，背完一个「斩」一个。</p>
+              <div className="panel-heading">
+                <span className="heading-icon"><Cards size={20} weight="duotone" /></span>
+                <div>
+                  <h2>临考速背</h2>
+                  <p>按重要程度排列，背完一个「斩」一个。</p>
+                </div>
+              </div>
               {(dismissedIds.length > 0 || lastDismissedId) && (
                 <div className="actions wrap">
                   {lastDismissedId && (
@@ -1762,14 +1934,14 @@ export default function App() {
                       setDismissedIds(dismissedIds.filter((id) => id !== lastDismissedId));
                       setLastDismissedId("");
                       setStatus("已撤销。");
-                    }}>撤销</button>
+                    }}><ArrowLeft size={18} weight="bold" />撤销</button>
                   )}
                   {dismissedIds.length > 0 && (
                     <button className="secondary" onClick={() => {
                       setDismissedIds([]);
                       setLastDismissedId("");
                       setStatus("已重置，所有卡片恢复。");
-                    }}>重置</button>
+                    }}><Sparkle size={18} weight="bold" />重置</button>
                   )}
                 </div>
               )}
@@ -1803,7 +1975,7 @@ export default function App() {
                         }, 300);
                       }}
                     >
-                      斩
+                      <CheckCircle size={15} weight="bold" />斩
                     </button>
                   </article>
                 ))}
@@ -1821,7 +1993,7 @@ export default function App() {
           <section className="app-section">
             <div className="panel">
               <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
-                <button className="secondary" onClick={() => setMemorizeModuleId("")}>← 返回列表</button>
+                <button className="secondary" onClick={() => setMemorizeModuleId("")}><ArrowLeft size={18} weight="bold" />返回列表</button>
                 <h2 style={{ margin: 0 }}>{displayModuleTitle(module.title, module.note)}</h2>
               </div>
               <div className="module-meta">
@@ -1844,12 +2016,12 @@ export default function App() {
               ) : (
                 <div>
                   <p className="muted">还没有生成速背内容。AI 会根据这个知识点的考察内容，生成核心概念、必背要点、记忆口诀和易错提醒。</p>
-                  <button onClick={() => generateMemorizationContent(module)} disabled={busy}>生成速背内容</button>
+                  <button onClick={() => generateMemorizationContent(module)} disabled={busy}><Cards size={18} weight="bold" />生成速背内容</button>
                 </div>
               )}
               {module.memorization && (
                 <div className="actions wrap" style={{ marginTop: "12px" }}>
-                  <button className="secondary" onClick={() => generateMemorizationContent(module)} disabled={busy}>重新生成</button>
+                  <button className="secondary" onClick={() => generateMemorizationContent(module)} disabled={busy}><Sparkle size={18} weight="bold" />重新生成</button>
                 </div>
               )}
             </div>
