@@ -57,6 +57,7 @@ export type StudyTask = {
   difficulty?: "low" | "medium" | "high";
   importance_rank?: number;
   exam_points?: string;
+  explanation?: string;
   practice_questions?: string;
   completed_at?: string;
   order?: number;

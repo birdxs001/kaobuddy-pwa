@@ -624,9 +624,9 @@ small {
 }
 
 .module-form {
-  grid-template-columns: minmax(180px, 1fr) 140px 140px auto;
+  grid-template-columns: minmax(220px, 1fr) 150px auto;
   align-items: end;
-  margin-bottom: 16px;
+  margin-top: 16px;
 }
 
 .module-form h2 {
@@ -646,6 +646,7 @@ small {
   align-content: start;
   gap: 10px;
   min-height: 420px;
+  min-width: 0;
   padding: 12px;
   border: 1px solid #ded8c9;
   border-radius: 8px;
@@ -667,9 +668,9 @@ small {
 
 .module-card {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(190px, auto) auto;
-  gap: 8px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
   min-height: 58px;
   padding: 10px;
   border: 1px solid #d8d2c2;
@@ -682,12 +683,14 @@ small {
   font-size: 17px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .module-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  max-width: 100%;
 }
 
 .module-meta span,

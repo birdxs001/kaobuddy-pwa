@@ -15,7 +15,7 @@ import type {
   WeakPoint
 } from "./types";
 
-type ProjectTab = "overview" | "materials" | "plan" | "module" | "result" | "review";
+type ProjectTab = "overview" | "materials" | "plan" | "mock" | "module" | "result" | "review";
 type ModuleStatus = "todo" | "doing" | "done";
 type ModulePriority = "low" | "medium" | "high";
 type ModuleDifficulty = "low" | "medium" | "high";
@@ -86,6 +86,7 @@ const visibleTabs: { tab: ProjectTab; label: string }[] = [
   { tab: "overview", label: "总览" },
   { tab: "materials", label: "资料" },
   { tab: "plan", label: "计划" },
+  { tab: "mock", label: "模拟考" },
   { tab: "review", label: "复盘" }
 ];
 
@@ -328,10 +329,26 @@ function extractModuleTitle(line: string) {
   return candidate;
 }
 
+function isGenericModuleText(text: string) {
+  const cleaned = stripMarkdown(text).replace(/\s+/g, "");
+  return /第\d+天|每日任务|天数|全真模拟|模拟测试|模拟卷|模考|错题回顾|串联|综合复习|复习计划|练习安排|学习安排|高效利用时间|聚焦高频|高频考点|补充要求|完成标准|建议通读|选择题相关模块/.test(cleaned);
+}
+
+function isGenericModuleTitle(title: string) {
+  const cleaned = stripMarkdown(title).replace(/\s+/g, "");
+  return !cleaned || /^(好的|关于时间|知识点|模块|计划|任务|复习|练习)$/.test(cleaned) || isGenericModuleText(cleaned);
+}
+
 function displayModuleTitle(title: string, note?: string) {
   const cleaned = stripMarkdown(title).replace(/\s+/g, "");
   const extracted = extractModuleTitle(cleaned) || extractModuleTitle(note || "");
   return extracted || compactTitle(cleaned, "知识点");
+}
+
+function isStudyModule(item: StudyTask) {
+  const title = displayModuleTitle(item.title, item.note || item.exam_points);
+  if (!title || title === "知识点") return false;
+  return !isGenericModuleTitle(title) && !isGenericModuleTitle(item.title);
 }
 
 function parseModulesFromPlan(content: string, projectId: string, noteId: string, existingCount: number): StudyTask[] {
@@ -347,7 +364,8 @@ function parseModulesFromPlan(content: string, projectId: string, noteId: string
           const rawTitle = String(record.title || record.name || record.module || record.moduleName || "");
           const note = String(record.note || record.reason || record.description || record.practice || "");
           const examPoints = String(record.exam_points || record.examPoints || record.points || record.content || record.test_points || note || "");
-          const title = extractModuleTitle(rawTitle) || extractModuleTitle(note) || compactTitle(rawTitle, "知识点");
+          const title = extractModuleTitle(rawTitle) || extractModuleTitle(note) || extractModuleTitle(examPoints);
+          if (!title || isGenericModuleTitle(title) || isGenericModuleTitle(rawTitle) || isGenericModuleText(`${rawTitle}\n${note}\n${examPoints}`)) return [];
           if (!title || seen.has(title)) return [];
           seen.add(title);
           const rawMinutes = Number(record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes);
@@ -388,7 +406,7 @@ function parseModulesFromPlan(content: string, projectId: string, noteId: string
   const seen = new Set<string>();
   return lines.flatMap((line, index) => {
     const title = extractModuleTitle(line);
-    if (!title || seen.has(title)) return [];
+    if (!title || seen.has(title) || isGenericModuleTitle(title) || isGenericModuleText(line)) return [];
     seen.add(title);
     const minutesMatch = line.match(/(?:预计(?:完成|学习)?时间\s*[:：]?\s*)?(\d+)\s*(分钟|min)/i);
     const hourMatch = line.match(/(\d+(?:\.\d+)?)\s*(小时|h)/i);
@@ -490,6 +508,10 @@ export default function App() {
     () => tasks.filter((item) => item.project_id === activeProject?.id).sort((a, b) => taskOrder(a, 0) - taskOrder(b, 0)),
     [tasks, activeProject]
   );
+  const visibleModules = useMemo(
+    () => scopedModules.filter(isStudyModule),
+    [scopedModules]
+  );
   const scopedMistakes = useMemo(
     () => mistakes.filter((item) => item.project_id === activeProject?.id),
     [mistakes, activeProject]
@@ -502,27 +524,19 @@ export default function App() {
     () => mockAttempts.filter((item) => item.project_id === activeProject?.id),
     [mockAttempts, activeProject]
   );
-  const completedModules = scopedModules.filter((item) => moduleStatus(item) === "done").length;
-  const progress = scopedModules.length ? Math.round((completedModules / scopedModules.length) * 100) : 0;
+  const completedModules = visibleModules.filter((item) => moduleStatus(item) === "done").length;
+  const progress = visibleModules.length ? Math.round((completedModules / visibleModules.length) * 100) : 0;
   const busy = Boolean(busyLabel);
-  const currentFocusModule = scopedModules.find((item) => moduleStatus(item) !== "done");
+  const currentFocusModule = visibleModules.find((item) => moduleStatus(item) !== "done");
   const selectedModule = selectedModuleId
     ? scopedModules.find((item) => item.id === selectedModuleId) || null
     : null;
   const latestPlanNote = scopedNotes.find((note) => note.mode === "plan");
-  const latestTeachNote = scopedNotes.find((note) => note.mode === "teach");
-  const latestPracticeNote = scopedNotes.find((note) => note.mode === "practice");
   const latestMockNote = scopedNotes.find((note) => note.mode === "mock");
-  const resultEntries = [
-    { label: "查看计划结果", note: latestPlanNote },
-    { label: "查看讲解结果", note: latestTeachNote },
-    { label: "查看模拟卷", note: latestPracticeNote },
-    { label: "查看模考结果", note: latestMockNote }
-  ].filter((item): item is { label: string; note: AiNote } => Boolean(item.note));
   const currentResultNote = resultNote || scopedNotes[0] || null;
 
   function projectProgress(projectId: string) {
-    const projectModules = tasks.filter((task) => task.project_id === projectId);
+    const projectModules = tasks.filter((task) => task.project_id === projectId && isStudyModule(task));
     if (!projectModules.length) return 0;
     return Math.round((projectModules.filter((task) => moduleStatus(task) === "done").length / projectModules.length) * 100);
   }
@@ -775,7 +789,7 @@ export default function App() {
 
   async function createModulesFromPlan(note: AiNote) {
     if (!activeProject) return;
-    const parsed = parseModulesFromPlan(note.content, activeProject.id, note.id, scopedModules.length);
+    const parsed = parseModulesFromPlan(note.content, activeProject.id, note.id, visibleModules.length);
     if (!parsed.length) return setStatus("这份计划没拆出进程、线程这类明确知识点名，可以重新生成或手动新增模块。");
     const ok = window.confirm(`我拆出了 ${parsed.length} 个知识模块，要加入计划看板吗？`);
     if (!ok) return;
@@ -802,6 +816,7 @@ export default function App() {
     event.preventDefault();
     if (!requireProject()) return;
     if (!moduleDraft.title.trim()) return setStatus("知识模块名称要填一下。");
+    if (isGenericModuleTitle(moduleDraft.title)) return setStatus("这里要填具体知识点，比如进程、线程、死锁，不能填每日任务或复习安排。");
     const timestamp = nowIso();
     await storage.saveTask({
       id: createId("module"),
@@ -813,9 +828,9 @@ export default function App() {
       module_status: "todo",
       priority: moduleDraft.priority,
       difficulty: moduleDraft.difficulty,
-      importance_rank: scopedModules.length + 1,
+      importance_rank: visibleModules.length + 1,
       exam_points: moduleDraft.note.trim(),
-      order: scopedModules.length,
+      order: visibleModules.length,
       note: moduleDraft.note.trim(),
       created_at: timestamp,
       updated_at: timestamp
@@ -826,10 +841,10 @@ export default function App() {
   }
 
   async function moveModule(targetStatus: ModuleStatus, beforeId?: string) {
-    const dragged = scopedModules.find((item) => item.id === draggingModuleId);
+    const dragged = visibleModules.find((item) => item.id === draggingModuleId);
     setDraggingModuleId("");
     if (!dragged) return;
-    const withoutDragged = scopedModules.filter((item) => item.id !== dragged.id);
+    const withoutDragged = visibleModules.filter((item) => item.id !== dragged.id);
     const updatedDragged: StudyTask = {
       ...dragged,
       status: targetStatus === "done" ? "done" : "todo",
@@ -883,6 +898,38 @@ export default function App() {
       await refresh();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "模块模拟题生成失败。");
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function generateModuleExplanation(module: StudyTask) {
+    if (!requireProject() || !requireApi()) return;
+    if (!scopedMaterials.length) return setStatus("先导入资料，再生成这个知识点的讲解。");
+    const moduleTitle = displayModuleTitle(module.title, module.note);
+    setBusyLabel(`正在生成「${moduleTitle}」的讲解...`);
+    try {
+      const content = await runAi("teach", {
+        api_config: apiConfig,
+        project: toProjectPayload(activeProject!),
+        materials: scopedMaterials.map(({ title, kind, content }) => ({ title, kind, content })),
+        extra: [
+          extra,
+          `只讲解这个知识点：${moduleTitle}`,
+          `它的考察内容：${module.exam_points || module.note || "请根据资料判断。"}`,
+          "输出给学生直接看的讲解，包含核心概念、常考方式、一个小例子和易错提醒。不要扩展成整章讲义。"
+        ].filter(Boolean).join("\n")
+      });
+      await storage.saveTask({
+        ...module,
+        explanation: stripMarkdown(content),
+        updated_at: nowIso()
+      });
+      setSelectedModuleId(module.id);
+      setStatus("模块讲解已生成。");
+      await refresh();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "模块讲解生成失败。");
     } finally {
       setBusyLabel("");
     }
@@ -1051,7 +1098,7 @@ export default function App() {
             <div className="progress-ring" style={{ "--progress": `${Math.min(progress, 100)}%` } as CSSProperties}>
               <strong>{progress}%</strong>
             </div>
-            <small>{completedModules} / {scopedModules.length} 个模块已学习</small>
+            <small>{completedModules} / {visibleModules.length} 个模块已学习</small>
           </div>
         </header>
 
@@ -1072,7 +1119,7 @@ export default function App() {
             </div>
             <div className="panel metric-panel">
               <span>知识模块</span>
-              <strong>{completedModules} / {scopedModules.length}</strong>
+              <strong>{completedModules} / {visibleModules.length}</strong>
               <small>学习进度按已学习模块数量计算。</small>
             </div>
             <div className="panel metric-panel">
@@ -1083,7 +1130,7 @@ export default function App() {
             <div className="panel metric-panel">
               <span>最近模考</span>
               <strong>{scopedMocks[0]?.score || "暂无"}</strong>
-              <small>{scopedMocks[0]?.title || "复盘页可以保存模考记录。"}</small>
+              <small>{scopedMocks[0]?.title || "模拟考页可以保存模考记录。"}</small>
             </div>
             <div className="panel wide">
               <h2>薄弱项摘要</h2>
@@ -1143,43 +1190,23 @@ export default function App() {
               <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 只剩三天，先救选择题相关模块。" /></label>
               <div className="actions wrap">
                 <button onClick={() => runMode("plan", "知识模块计划")} disabled={busy}>生成计划</button>
-                <button className="secondary" onClick={() => runMode("teach", "考点讲解")} disabled={busy}>生成讲解</button>
-                <button className="secondary" onClick={() => runMode("practice", "模拟卷")} disabled={busy}>生成模拟卷</button>
-                <button className="secondary" onClick={() => runMode("mock-exam", "短模考")} disabled={busy}>生成模考</button>
+                {latestPlanNote && (
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setResultNote(latestPlanNote);
+                      setActiveTab("result");
+                    }}
+                  >
+                    查看计划结果
+                  </button>
+                )}
               </div>
-              {!!resultEntries.length && (
-                <div className="result-shortcuts">
-                  {resultEntries.map((entry) => (
-                    <button
-                      key={entry.note.id}
-                      className="mini"
-                      onClick={() => {
-                        setResultNote(entry.note);
-                        setActiveTab("result");
-                      }}
-                    >
-                      {entry.label}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
-
-            <form className="panel module-form" onSubmit={saveModule}>
-              <h2>手动加模块</h2>
-              <input value={moduleDraft.title} onChange={(event) => setModuleDraft({ ...moduleDraft, title: event.target.value })} placeholder="知识点名称" />
-              <input aria-label="预计学习时间" type="number" min="10" value={moduleDraft.estimated_minutes} onChange={(event) => setModuleDraft({ ...moduleDraft, estimated_minutes: Number(event.target.value) })} />
-              <select aria-label="难度" value={moduleDraft.difficulty} onChange={(event) => setModuleDraft({ ...moduleDraft, difficulty: event.target.value as ModuleDifficulty })}>
-                <option value="low">难度低</option>
-                <option value="medium">难度中</option>
-                <option value="high">难度高</option>
-              </select>
-              <button type="submit">加入计划</button>
-            </form>
 
             <div className="kanban">
               {moduleColumns.map((column) => {
-                const columnModules = scopedModules.filter((item) => moduleStatus(item) === column.status);
+                const columnModules = visibleModules.filter((item) => moduleStatus(item) === column.status);
                 return (
                   <div
                     key={column.status}
@@ -1208,7 +1235,6 @@ export default function App() {
                         <div className="module-meta">
                           <span>{item.estimated_minutes} 分钟</span>
                           <span>{difficultyLabel(item.difficulty)}</span>
-                          <span>第 {item.importance_rank || item.order || 1} 位</span>
                         </div>
                         {moduleStatus(item) !== "done" && <button className="mini" onClick={(event) => {
                           event.stopPropagation();
@@ -1222,6 +1248,54 @@ export default function App() {
               })}
             </div>
 
+            <form className="panel module-form" onSubmit={saveModule}>
+              <h2>手动补充模块</h2>
+              <input value={moduleDraft.title} onChange={(event) => setModuleDraft({ ...moduleDraft, title: event.target.value })} placeholder="知识点名称，比如 进程、线程、死锁" />
+              <select aria-label="难度" value={moduleDraft.difficulty} onChange={(event) => setModuleDraft({ ...moduleDraft, difficulty: event.target.value as ModuleDifficulty })}>
+                <option value="low">难度低</option>
+                <option value="medium">难度中</option>
+                <option value="high">难度高</option>
+              </select>
+              <button type="submit">加入计划</button>
+            </form>
+
+          </section>
+        )}
+
+        {activeTab === "mock" && (
+          <section className="grid two app-section">
+            <div className="panel">
+              <h2>模拟考</h2>
+              <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 题量少一点，重点考进程和文件管理。" /></label>
+              <div className="actions wrap">
+                <button onClick={() => runMode("mock-exam", "模拟考")} disabled={busy}>生成模拟考</button>
+                {latestMockNote && (
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setResultNote(latestMockNote);
+                      setActiveTab("result");
+                    }}
+                  >
+                    查看模拟考结果
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="panel">
+              <h2>模考记录</h2>
+              <form className="stack" onSubmit={saveMock}>
+                <input value={mockDraft.title} onChange={(event) => setMockDraft({ ...mockDraft, title: event.target.value })} placeholder="模考标题" />
+                <input value={mockDraft.score} onChange={(event) => setMockDraft({ ...mockDraft, score: event.target.value })} placeholder="分数，比如 78/100" />
+                <input type="number" min="10" value={mockDraft.duration_minutes} onChange={(event) => setMockDraft({ ...mockDraft, duration_minutes: Number(event.target.value) })} />
+                <textarea value={mockDraft.feedback} onChange={(event) => setMockDraft({ ...mockDraft, feedback: event.target.value })} placeholder="模考反馈" />
+                <button type="submit">保存模考记录</button>
+              </form>
+              <div className="list compact">
+                {scopedMocks.map((item) => <article key={item.id} className="item"><strong>{item.title}</strong><small>{item.score} · {item.duration_minutes} 分钟</small><p>{item.feedback}</p></article>)}
+                {!scopedMocks.length && <p className="muted">还没有模考记录。</p>}
+              </div>
+            </div>
           </section>
         )}
 
@@ -1247,6 +1321,14 @@ export default function App() {
                 <div className="detail-block">
                   <h3>会考什么</h3>
                   {renderHumanText(selectedModule.exam_points || selectedModule.note || "这个模块还没有考察内容说明，可以重新生成计划或手动补充。")}
+                </div>
+
+                <div className="detail-block">
+                  <h3>模块讲解</h3>
+                  {selectedModule.explanation ? renderHumanText(selectedModule.explanation) : <p className="muted">需要讲解时，在这里单独生成这个知识点的讲解。</p>}
+                  <div className="actions wrap">
+                    <button onClick={() => generateModuleExplanation(selectedModule)} disabled={busy}>生成讲解</button>
+                  </div>
                 </div>
 
                 <div className="detail-block">
@@ -1282,10 +1364,12 @@ export default function App() {
                 }}>放进错题草稿</button>}
                 {currentResultNote?.mode === "mock" && <button onClick={() => {
                   setMockDraft({ title: currentResultNote.title, score: "", duration_minutes: 30, feedback: currentResultNote.content.slice(0, 420) });
-                  setActiveTab("review");
+                  setActiveTab("mock");
                   setStatus("已把模考反馈放到记录草稿，补个分数就能保存。");
                 }}>放进模考记录</button>}
-                <button className="secondary" onClick={() => setActiveTab("plan")}>回到计划页调整</button>
+                <button className="secondary" onClick={() => setActiveTab(currentResultNote?.mode === "mock" ? "mock" : "plan")}>
+                  {currentResultNote?.mode === "mock" ? "回到模拟考" : "回到计划页调整"}
+                </button>
                 <button className="secondary" onClick={() => setActiveTab("materials")}>继续补资料</button>
               </div>
             </div>
@@ -1308,7 +1392,7 @@ export default function App() {
               </div>
             </div>
             <div className="panel">
-              <h2>薄弱项和模考</h2>
+              <h2>薄弱项</h2>
               <form className="stack" onSubmit={saveWeakPoint}>
                 <input value={weakPointDraft.title} onChange={(event) => setWeakPointDraft({ ...weakPointDraft, title: event.target.value })} placeholder="薄弱项，比如 极限运算" />
                 <input value={weakPointDraft.evidence} onChange={(event) => setWeakPointDraft({ ...weakPointDraft, evidence: event.target.value })} placeholder="证据，比如 模考第 3 题" />
@@ -1319,15 +1403,9 @@ export default function App() {
                 </select>
                 <button type="submit">记录薄弱项</button>
               </form>
-              <form className="stack" onSubmit={saveMock}>
-                <input value={mockDraft.title} onChange={(event) => setMockDraft({ ...mockDraft, title: event.target.value })} placeholder="模考标题" />
-                <input value={mockDraft.score} onChange={(event) => setMockDraft({ ...mockDraft, score: event.target.value })} placeholder="分数，比如 78/100" />
-                <input type="number" min="10" value={mockDraft.duration_minutes} onChange={(event) => setMockDraft({ ...mockDraft, duration_minutes: Number(event.target.value) })} />
-                <textarea value={mockDraft.feedback} onChange={(event) => setMockDraft({ ...mockDraft, feedback: event.target.value })} placeholder="模考反馈" />
-                <button type="submit">保存模考记录</button>
-              </form>
               <div className="list compact">
-                {scopedMocks.map((item) => <article key={item.id} className="item"><strong>{item.title}</strong><small>{item.score} · {item.duration_minutes} 分钟</small><p>{item.feedback}</p></article>)}
+                {scopedWeakPoints.map((item) => <article key={item.id} className="item"><strong>{item.title}</strong><small>{item.severity}</small><p>{item.evidence}</p></article>)}
+                {!scopedWeakPoints.length && <p className="muted">还没有薄弱项。</p>}
               </div>
             </div>
           </section>
