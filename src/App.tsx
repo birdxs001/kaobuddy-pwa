@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { importVideo, recognizeHandwriting, runAi, runModulePractice, testApiConfig } from "./api";
+import { importVideo, recognizeHandwriting, runAi, testApiConfig } from "./api";
 import { documentPlaceholder, readAsDataUrl, readPdfText, readTextFile } from "./fileReaders";
 import { createId, storage } from "./storage";
 import type {
@@ -934,13 +934,17 @@ export default function App() {
     if (!scopedMaterials.length) return setStatus("先导入资料，再生成这个知识点的模拟题。");
     setBusyLabel(`正在生成「${displayModuleTitle(module.title, module.note)}」的模拟题...`);
     try {
-      const content = await runModulePractice({
+      const moduleTitle = displayModuleTitle(module.title, module.note);
+      const content = await runAi("practice", {
         api_config: apiConfig,
         project: toProjectPayload(activeProject!),
         materials: scopedMaterials.map(({ title, kind, content }) => ({ title, kind, content })),
-        extra,
-        module_title: displayModuleTitle(module.title, module.note),
-        exam_points: module.exam_points || module.note || ""
+        extra: [
+          extra,
+          `当前知识点：${moduleTitle}`,
+          `考察内容：${module.exam_points || module.note || "请根据资料判断。"}`,
+          "请只围绕这个知识点生成 3 到 5 道模块内模拟题，包含题目、参考答案和简短解析，不要扩展到其它知识点。"
+        ].filter(Boolean).join("\n")
       });
       const updated = {
         ...module,
@@ -1365,9 +1369,11 @@ export default function App() {
                 <div className="detail-block">
                   <h3>模块讲解</h3>
                   {selectedModule.explanation ? renderHumanText(selectedModule.explanation) : <p className="muted">需要讲解时，在这里单独生成这个知识点的讲解。</p>}
-                  <div className="actions wrap">
-                    <button onClick={() => generateModuleExplanation(selectedModule)} disabled={busy}>生成讲解</button>
-                  </div>
+                  {!selectedModule.explanation && (
+                    <div className="actions wrap">
+                      <button onClick={() => generateModuleExplanation(selectedModule)} disabled={busy}>生成讲解</button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="detail-block">
