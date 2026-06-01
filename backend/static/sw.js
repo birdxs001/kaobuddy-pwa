@@ -1,4 +1,4 @@
-const CACHE_NAME = "kaobuddy-shell-v9";
+const CACHE_NAME = "kaobuddy-shell-v10";
 const SHELL = ["/", "/manifest.webmanifest", "/icons/icon.svg"];
 
 self.addEventListener("install", (event) => {
