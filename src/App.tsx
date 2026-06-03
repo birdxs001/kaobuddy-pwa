@@ -327,7 +327,7 @@ export default function App() {
         aiMode: "invite",
       };
       saveInviteState(nextState);
-      setStatus(result.valid ? `${result.message}，还可用 ${result.remaining} 次。` : result.message);
+      setStatus(result.valid ? result.message : result.message);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "邀请码验证失败。");
     } finally {
@@ -1061,10 +1061,10 @@ export default function App() {
       </div>
       {inviteState.aiMode === "invite" ? (
         <>
-          <label>邀请码<input value={inviteState.inviteCode} onChange={(event) => setInviteState({ ...inviteState, inviteCode: event.target.value })} placeholder="比如 KAO-V1-DEMO-1" /></label>
+          <label>邀请码<input value={inviteState.inviteCode} onChange={(event) => setInviteState({ ...inviteState, inviteCode: event.target.value })} placeholder="输入管理员给你的邀请码" /></label>
           <p className="hint">
             {inviteState.validatedAt
-              ? `上次验证：还可用 ${inviteState.remaining} 次，剩余额度约 ${inviteState.remainingBudgetCny} 元。`
+              ? "邀请码有效。"
               : "输入邀请码后先验证一次；后续生成计划、讲解、卡片都会自动带上它。"}
           </p>
           <div className="actions">
