@@ -1,13 +1,30 @@
+from __future__ import annotations
+
+import json
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .ai_client import AiClientError, chat_completion
+from .ai_client import (
+    AiClientError,
+    chat_completion,
+    chat_completion_stream,
+    chat_completion_with_usage,
+    estimate_cost_cny,
+    estimate_tokens_from_chars,
+    server_api_config,
+)
+from .invites import InviteError, ensure_invite_can_call, invite_limits, record_invite_usage, verify_invite
 from .prompts import (
+    CARD_SYSTEM_PROMPT,
+    DAILY_PLAN_SYSTEM_PROMPT,
+    GRADE_PRACTICE_SYSTEM_PROMPT,
     MEMORIZE_SYSTEM_PROMPT,
+    MOCK_GRADE_SYSTEM_PROMPT,
     MODULE_PRACTICE_SYSTEM_PROMPT,
     MOCK_SYSTEM_PROMPT,
     OCR_SYSTEM_PROMPT,
@@ -20,9 +37,14 @@ from .prompts import (
 from .schemas import (
     AiRequest,
     AiResponse,
+    ChatProxyRequest,
     ChatCompletionRequest,
     ChatMessage,
+    DailyPlanRequest,
     HandwritingRequest,
+    InviteVerifyRequest,
+    InviteVerifyResponse,
+    MockGradeRequest,
     ModulePracticeRequest,
     PracticeRequest,
     VideoImportRequest,
@@ -50,6 +72,8 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 ASSETS_DIR = DIST_DIR / "assets" if (DIST_DIR / "assets").exists() else STATIC_DIR / "assets"
 ICONS_DIR = DIST_DIR / "icons" if (DIST_DIR / "icons").exists() else STATIC_DIR / "icons"
+PLAN_CHUNK_SIZE = 8000
+PLAN_MIN_TOKENS = 8000
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 if ICONS_DIR.exists():
@@ -85,7 +109,68 @@ async def health() -> dict:
     return {"ok": True}
 
 
-async def _run_ai(request: AiRequest, system_prompt: str, task_prompt: str) -> AiResponse:
+def _content_length(content: Any) -> int:
+    if isinstance(content, str):
+        return len(content)
+    return len(json.dumps(content, ensure_ascii=False))
+
+
+def _messages_char_count(messages: list[ChatMessage]) -> int:
+    return sum(_content_length(message.content) for message in messages)
+
+
+def _response_from_invite(content: str, invite_code: str, usage: dict[str, Any], fallback_prompt_chars: int) -> AiResponse:
+    try:
+        prompt_tokens = int(usage.get("prompt_tokens", 0))
+    except (TypeError, ValueError):
+        prompt_tokens = 0
+    try:
+        completion_tokens = int(usage.get("completion_tokens", 0))
+    except (TypeError, ValueError):
+        completion_tokens = 0
+    if prompt_tokens <= 0:
+        prompt_tokens = estimate_tokens_from_chars(fallback_prompt_chars)
+    if completion_tokens <= 0:
+        completion_tokens = estimate_tokens_from_chars(len(content))
+    cost = estimate_cost_cny(prompt_tokens, completion_tokens)
+    status = record_invite_usage(invite_code, cost)
+    return AiResponse(content=content, remaining=status.remaining, remaining_budget_cny=status.remaining_budget_cny)
+
+
+async def _chat_for_request(request: AiRequest | ChatCompletionRequest | DailyPlanRequest | HandwritingRequest, messages: list[ChatMessage], minimum_tokens: int | None = None) -> AiResponse:
+    if request.api_config:
+        api_config = request.api_config
+        if minimum_tokens and api_config.max_tokens < minimum_tokens:
+            api_config = api_config.model_copy(update={"max_tokens": minimum_tokens})
+        try:
+            content = await chat_completion(api_config, messages)
+        except AiClientError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return AiResponse(content=content)
+
+    invite_code = (request.invite_code or "").strip()
+    if not invite_code:
+        raise HTTPException(status_code=400, detail="请先填写邀请码，或切换到自带 API Key 模式。")
+
+    max_chars, max_tokens = invite_limits()
+    prompt_chars = _messages_char_count(messages)
+    if prompt_chars > max_chars:
+        raise HTTPException(status_code=413, detail="这次请求内容太长了，请缩短资料或切换到自带 API Key。")
+    desired_tokens = minimum_tokens or 1800
+    capped_tokens = min(max_tokens, max(128, desired_tokens))
+    try:
+        api_config = server_api_config(max_tokens=capped_tokens)
+        expected_cost = estimate_cost_cny(estimate_tokens_from_chars(prompt_chars), capped_tokens)
+        ensure_invite_can_call(invite_code, expected_cost)
+        content, usage = await chat_completion_with_usage(api_config, messages)
+        return _response_from_invite(content, invite_code, usage, prompt_chars)
+    except InviteError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except AiClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+async def _run_ai(request: AiRequest, system_prompt: str, task_prompt: str, minimum_tokens: int | None = None) -> AiResponse:
     user_content = (
         f"{task_prompt}\n\n"
         f"【考试项目】\n{format_project(request.project)}\n\n"
@@ -96,14 +181,105 @@ async def _run_ai(request: AiRequest, system_prompt: str, task_prompt: str) -> A
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=user_content),
     ]
-    try:
-        content = await chat_completion(request.api_config, messages)
-    except AiClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return AiResponse(content=content)
+    return await _chat_for_request(request, messages, minimum_tokens)
+
+
+def _plan_material_chunks(request: AiRequest) -> list[str]:
+    chunks: list[str] = []
+    for material in request.materials:
+        content = material.content.strip()
+        if not content:
+            continue
+        total = len(content)
+        for start in range(0, total, PLAN_CHUNK_SIZE):
+            end = min(start + PLAN_CHUNK_SIZE, total)
+            source_id = f"，id：{material.id}" if material.id else ""
+            chunks.append(
+                f"## 资料片段 {len(chunks) + 1}\n"
+                f"资料：{material.title}（{material.kind}{source_id}）\n"
+                f"字符范围：{start + 1}-{end} / {total}\n"
+                f"{content[start:end]}"
+            )
+    return chunks
+
+
+async def _run_plan(request: AiRequest) -> AiResponse:
+    chunks = _plan_material_chunks(request)
+    if not chunks:
+        return await _run_ai(
+            request,
+            PLAN_SYSTEM_PROMPT,
+            "请只根据导入资料抽取知识点卡片模块，不按日期排，不按每天学习时长安排。每个模块必须包含知识点名称、预计完成时间、难度、重要程度排名、考察内容、建议练习方式、资料来源和证据。",
+            PLAN_MIN_TOKENS,
+        )
+
+    plan_outputs: list[str] = []
+    last_remaining: int | None = None
+    last_remaining_budget_cny: float | None = None
+    for index, chunk in enumerate(chunks, start=1):
+        user_content = (
+            "请从下面这一段导入资料中完整抽取知识点模块。考试时间和目标分数用于排序、估时和练习建议，但不要因为时间紧就漏掉本片段明确出现的知识点。不要补齐本片段没有依据的模块；如果需要补充背景，只能写在考察内容里的“补充理解”。\n\n"
+            f"【考试项目】\n{format_project(request.project)}\n\n"
+            f"【资料】\n{chunk}\n\n"
+            f"【补充要求】\n{request.extra or '无'}"
+        )
+        messages = [
+            ChatMessage(role="system", content=PLAN_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=user_content),
+        ]
+        response = await _chat_for_request(request, messages, PLAN_MIN_TOKENS)
+        last_remaining = response.remaining
+        last_remaining_budget_cny = response.remaining_budget_cny
+        plan_outputs.append(f"资料片段 {index} 抽取结果\n{response.content}")
+
+    prefix = f"长资料已分块处理：本次处理 {len(chunks)} 个资料片段。"
+    return AiResponse(
+        content=f"{prefix}\n\n" + "\n\n".join(plan_outputs),
+        remaining=last_remaining,
+        remaining_budget_cny=last_remaining_budget_cny,
+    )
+
+
+def _format_daily_plan_modules(request: DailyPlanRequest) -> str:
+    if not request.modules:
+        return "暂无未完成知识点模块。"
+    lines = []
+    for module in request.modules:
+        lines.append(
+            "\n".join(
+                [
+                    f"模块ID：{module.id}",
+                    f"知识点：{module.title}",
+                    f"预计时间：{module.estimated_minutes} 分钟",
+                    f"状态：{module.module_status}",
+                    f"重要排名：{module.importance_rank or '未填写'}",
+                    f"难度：{module.difficulty or '未填写'}",
+                    f"考察内容：{module.exam_points or '未填写'}",
+                    f"资料来源：{module.source_title or '未填写'}",
+                    f"资料证据：{module.evidence or '未填写'}",
+                ]
+            )
+        )
+    return "\n\n".join(lines)
+
+
+async def _run_daily_plan(request: DailyPlanRequest) -> AiResponse:
+    user_content = (
+        "请为下面这些未完成知识点生成每日任务分配。只输出 JSON 数组。\n\n"
+        f"【考试项目】\n{format_project(request.project)}\n\n"
+        f"【未完成知识点模块】\n{_format_daily_plan_modules(request)}\n\n"
+        f"【补充要求】\n{request.extra or '无'}"
+    )
+    messages = [
+        ChatMessage(role="system", content=DAILY_PLAN_SYSTEM_PROMPT),
+        ChatMessage(role="user", content=user_content),
+    ]
+    return await _chat_for_request(request, messages, 4000)
 
 
 def _request_with_min_tokens(request: AiRequest, minimum: int) -> AiRequest:
+    if not request.api_config:
+        return request
     current = request.api_config.max_tokens
     if current >= minimum:
         return request
@@ -115,20 +291,34 @@ async def test_ai(request: ChatCompletionRequest) -> AiResponse:
     messages = request.messages or [
         ChatMessage(role="user", content="请回复：连接成功"),
     ]
-    try:
-        content = await chat_completion(request.api_config, messages)
-    except AiClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return AiResponse(content=content)
+    return await _chat_for_request(request, messages)
+
+
+@app.post("/api/invite/verify", response_model=InviteVerifyResponse)
+async def verify_invite_code(request: InviteVerifyRequest) -> InviteVerifyResponse:
+    status = verify_invite(request.code)
+    return InviteVerifyResponse(
+        valid=status.valid,
+        remaining=status.remaining,
+        remainingBudgetCny=status.remaining_budget_cny,
+        message=status.message,
+    )
+
+
+@app.post("/api/ai/chat", response_model=AiResponse)
+async def invite_chat(request: ChatProxyRequest) -> AiResponse:
+    proxy = ChatCompletionRequest(inviteCode=request.invite_code, messages=request.messages)
+    return await _chat_for_request(proxy, request.messages)
 
 
 @app.post("/api/ai/plan", response_model=AiResponse)
 async def make_plan(request: AiRequest) -> AiResponse:
-    return await _run_ai(
-        request,
-        PLAN_SYSTEM_PROMPT,
-        "请只根据导入资料抽取知识点卡片模块，不按日期排，不按每天学习时长安排。每个模块必须包含知识点名称、预计完成时间、难度、重要程度排名、考察内容和建议练习方式。不要输出 JSON、数组或字段名。",
-    )
+    return await _run_plan(request)
+
+
+@app.post("/api/ai/daily-plan", response_model=AiResponse)
+async def make_daily_plan(request: DailyPlanRequest) -> AiResponse:
+    return await _run_daily_plan(request)
 
 
 @app.post("/api/ai/memorize", response_model=AiResponse)
@@ -149,11 +339,54 @@ async def teach(request: AiRequest) -> AiResponse:
     )
 
 
+@app.post("/api/ai/cards", response_model=AiResponse)
+async def generate_cards(request: AiRequest) -> AiResponse:
+    return await _run_ai(
+        request,
+        CARD_SYSTEM_PROMPT,
+        "请根据【补充要求】中指定的知识点和考察内容，生成 4~6 张学习卡片的 JSON 数组。",
+        6000,
+    )
+
+
+@app.post("/api/ai/cards/stream")
+async def generate_cards_stream(request: AiRequest):
+    """Stream card generation via SSE."""
+    user_content = (
+        "请根据【补充要求】中指定的知识点和考察内容，生成 4~6 张学习卡片的 JSON 数组。\n\n"
+        f"【考试项目】\n{format_project(request.project)}\n\n"
+        f"【资料】\n{format_materials(request.materials)}\n\n"
+        f"【补充要求】\n{request.extra or '无'}"
+    )
+    messages = [
+        ChatMessage(role="system", content=CARD_SYSTEM_PROMPT),
+        ChatMessage(role="user", content=user_content),
+    ]
+
+    api_config = request.api_config
+    if not api_config:
+        try:
+            api_config = server_api_config(6000)
+        except AiClientError:
+            raise HTTPException(status_code=400, detail="请配置 API Key 后再试。")
+
+    async def event_stream():
+        try:
+            async for chunk in chat_completion_stream(api_config, messages):
+                yield f"data: {json.dumps({'t': chunk})}\n\n"
+            yield "data: [DONE]\n\n"
+        except AiClientError as exc:
+            yield f"data: {json.dumps({'e': str(exc)})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 @app.post("/api/ai/practice", response_model=AiResponse)
 async def practice(request: PracticeRequest) -> AiResponse:
     answer_text = "\n".join(f"题目：{item.question}\n作答：{item.answer}" for item in request.answers) or "用户还没有提交答案，请先生成练习题。"
     enriched = AiRequest(
         api_config=request.api_config,
+        inviteCode=request.invite_code,
         project=request.project,
         materials=request.materials,
         extra=f"{request.extra or ''}\n\n【用户作答】\n{answer_text}",
@@ -168,7 +401,7 @@ async def practice(request: PracticeRequest) -> AiResponse:
 @app.post("/api/ai/module-practice", response_model=AiResponse)
 async def module_practice(request: ModulePracticeRequest) -> AiResponse:
     return await _run_ai(
-        _request_with_min_tokens(request, 5000),
+        request,
         MODULE_PRACTICE_SYSTEM_PROMPT,
         (
             f"当前知识点：{request.module_title}\n"
@@ -176,6 +409,28 @@ async def module_practice(request: ModulePracticeRequest) -> AiResponse:
             "请只围绕这个知识点生成 3 道模块内模拟题，包含题目、参考答案和完整解析。"
             "如果题目里出现表格，请直接排成清楚的表格。不要在解析中途停止。"
         ),
+        5000,
+    )
+
+
+@app.post("/api/ai/grade-practice", response_model=AiResponse)
+async def grade_practice(request: PracticeRequest) -> AiResponse:
+    answer_text = "\n".join(
+        f"第{i+1}题：{item.question}\n学生作答：{item.answer}"
+        for i, item in enumerate(request.answers)
+    ) or "学生未提交任何答案。"
+    enriched = AiRequest(
+        api_config=request.api_config,
+        inviteCode=request.invite_code,
+        project=request.project,
+        materials=request.materials,
+        extra=f"【原始练习题】\n{request.extra or '无'}\n\n【学生作答】\n{answer_text}",
+    )
+    return await _run_ai(
+        enriched,
+        GRADE_PRACTICE_SYSTEM_PROMPT,
+        "请逐题批改学生的练习答案，给出对错判断、错因分析、正确答案和整体评价。",
+        5000,
     )
 
 
@@ -186,6 +441,27 @@ async def mock_exam(request: AiRequest) -> AiResponse:
         MOCK_SYSTEM_PROMPT,
         "请根据补充要求中指定的考试时长生成对应题量的模拟卷。",
     )
+
+
+@app.post("/api/ai/grade-mock", response_model=AiResponse)
+async def grade_mock(request: MockGradeRequest) -> AiResponse:
+    user_content = (
+        f"【考试项目】\n{format_project(request.project)}\n\n"
+        f"【模考试卷（含参考答案）】\n{request.exam_content}\n\n"
+        f"【考生作答】\n{request.user_answers}\n\n"
+        f"请按照【题目解析】中的参考答案逐题评分，并给出总分、正确率和薄弱知识点。"
+    )
+    messages = [
+        ChatMessage(role="system", content=MOCK_GRADE_SYSTEM_PROMPT),
+        ChatMessage(role="user", content=user_content),
+    ]
+    wrapper = AiRequest(
+        api_config=request.api_config,
+        inviteCode=request.invite_code,
+        project=request.project,
+        materials=request.materials,
+    )
+    return await _chat_for_request(wrapper, messages, 8000)
 
 
 @app.post("/api/ocr/handwriting", response_model=AiResponse)
@@ -203,11 +479,7 @@ async def handwriting_ocr(request: HandwritingRequest) -> AiResponse:
         ChatMessage(role="system", content=OCR_SYSTEM_PROMPT),
         ChatMessage(role="user", content=content),
     ]
-    try:
-        result = await chat_completion(request.api_config, messages)
-    except AiClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return AiResponse(content=result)
+    return await _chat_for_request(request, messages)
 
 
 @app.post("/api/video/import", response_model=VideoImportResponse)

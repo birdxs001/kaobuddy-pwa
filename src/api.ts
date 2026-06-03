@@ -1,11 +1,18 @@
-import type { ApiConfig, StudyMaterial, StudyProject } from "./types";
+import type { ApiConfig, StudyMaterial, StudyProject, StudyTask } from "./types";
 
 const API_BASE = "";
 
-type AiPayload = {
-  api_config: ApiConfig;
+export type AiAuthPayload = { api_config: ApiConfig; inviteCode?: never } | { inviteCode: string; api_config?: never };
+
+export type AiResult = {
+  content: string;
+  remaining?: number;
+  remainingBudgetCny?: number;
+};
+
+type AiPayload = AiAuthPayload & {
   project: Omit<StudyProject, "id" | "created_at" | "updated_at">;
-  materials: Pick<StudyMaterial, "title" | "kind" | "content">[];
+  materials: Pick<StudyMaterial, "id" | "title" | "kind" | "content">[];
   extra?: string;
 };
 
@@ -49,35 +56,144 @@ export async function testApiConfig(api_config: ApiConfig): Promise<string> {
   return data.content;
 }
 
-export async function runAi(mode: "plan" | "teach" | "practice" | "mock-exam", payload: AiPayload): Promise<string> {
+export async function verifyInviteCode(code: string): Promise<{
+  valid: boolean;
+  remaining: number;
+  remainingBudgetCny: number;
+  message: string;
+}> {
+  const response = await fetch(`${API_BASE}/api/invite/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code })
+  });
+  return parseResponse(response);
+}
+
+export async function runAi(mode: "plan" | "teach" | "practice" | "mock-exam", payload: AiPayload, signal?: AbortSignal): Promise<AiResult> {
   const endpoint = mode === "mock-exam" ? "/api/ai/mock-exam" : `/api/ai/${mode}`;
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    signal
   });
-  const data = await parseResponse<{ content: string }>(response);
-  return data.content;
+  return parseResponse<AiResult>(response);
 }
 
-export async function runMemorize(payload: AiPayload): Promise<string> {
+export async function runMemorize(payload: AiPayload): Promise<AiResult> {
   const response = await fetch(`${API_BASE}/api/ai/memorize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
-  const data = await parseResponse<{ content: string }>(response);
-  return data.content;
+  return parseResponse<AiResult>(response);
 }
 
-export async function runModulePractice(payload: AiPayload & { module_title: string; exam_points?: string }): Promise<string> {
+export async function runModulePractice(payload: AiPayload & { module_title: string; exam_points?: string }): Promise<AiResult> {
   const response = await fetch(`${API_BASE}/api/ai/module-practice`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
-  const data = await parseResponse<{ content: string }>(response);
-  return data.content;
+  return parseResponse<AiResult>(response);
+}
+
+export async function runCards(payload: AiPayload): Promise<AiResult> {
+  const response = await fetch(`${API_BASE}/api/ai/cards`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return parseResponse<AiResult>(response);
+}
+
+export async function runCardsStream(
+  payload: AiPayload,
+  onChunk: (text: string) => void,
+  onError: (error: string) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  const response = await fetch(`${API_BASE}/api/ai/cards/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(formatApiError(data.detail));
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("浏览器不支持流式读取。");
+  const decoder = new TextDecoder();
+  let fullText = "";
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6).trim();
+      if (data === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.t) {
+          fullText += parsed.t;
+          onChunk(parsed.t);
+        } else if (parsed.e) {
+          onError(parsed.e);
+          return fullText;
+        }
+      } catch { /* skip malformed */ }
+    }
+  }
+  return fullText;
+}
+
+export async function gradeMock(payload: AiAuthPayload & {
+  project: Omit<StudyProject, "id" | "created_at" | "updated_at">;
+  materials: Pick<StudyMaterial, "id" | "title" | "kind" | "content">[];
+  exam_content: string;
+  user_answers: string;
+}): Promise<AiResult> {
+  const response = await fetch(`${API_BASE}/api/ai/grade-mock`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return parseResponse<AiResult>(response);
+}
+
+export async function gradePractice(payload: AiAuthPayload & {
+  project: Omit<StudyProject, "id" | "created_at" | "updated_at">;
+  materials: Pick<StudyMaterial, "id" | "title" | "kind" | "content">[];
+  extra?: string;
+  answers: { question: string; answer: string }[];
+}): Promise<AiResult> {
+  const response = await fetch(`${API_BASE}/api/ai/grade-practice`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return parseResponse<AiResult>(response);
+}
+
+export async function runDailyPlan(payload: AiAuthPayload & {
+  project: Omit<StudyProject, "id" | "created_at" | "updated_at">;
+  modules: Pick<StudyTask, "id" | "title" | "estimated_minutes" | "difficulty" | "importance_rank" | "exam_points" | "source_title" | "evidence" | "module_status">[];
+  extra?: string;
+}, signal?: AbortSignal): Promise<AiResult> {
+  const response = await fetch(`${API_BASE}/api/ai/daily-plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal
+  });
+  return parseResponse<AiResult>(response);
 }
 
 export async function importVideo(url: string) {
@@ -95,12 +211,11 @@ export async function importVideo(url: string) {
   }>(response);
 }
 
-export async function recognizeHandwriting(api_config: ApiConfig, image_data_urls: string[], note_hint?: string): Promise<string> {
+export async function recognizeHandwriting(auth: AiAuthPayload, image_data_urls: string[], note_hint?: string): Promise<AiResult> {
   const response = await fetch(`${API_BASE}/api/ocr/handwriting`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_config, image_data_urls, note_hint })
+    body: JSON.stringify({ ...auth, image_data_urls, note_hint })
   });
-  const data = await parseResponse<{ content: string }>(response);
-  return data.content;
+  return parseResponse<AiResult>(response);
 }

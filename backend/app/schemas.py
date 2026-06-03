@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 
 class ApiConfig(BaseModel):
@@ -29,13 +29,17 @@ class StudyProject(BaseModel):
 
 
 class MaterialSummary(BaseModel):
+    id: Optional[str] = None
     title: str
     kind: Literal["text", "file", "handwriting", "video", "pdf", "markdown", "document"]
     content: str = ""
 
 
 class AiRequest(BaseModel):
-    api_config: ApiConfig
+    model_config = ConfigDict(populate_by_name=True)
+
+    api_config: Optional[ApiConfig] = None
+    invite_code: Optional[str] = Field(default=None, alias="inviteCode")
     project: StudyProject
     materials: List[MaterialSummary] = []
     extra: Optional[str] = None
@@ -55,18 +59,57 @@ class ModulePracticeRequest(AiRequest):
     exam_points: str = ""
 
 
+class MockGradeRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    api_config: Optional[ApiConfig] = None
+    invite_code: Optional[str] = Field(default=None, alias="inviteCode")
+    project: StudyProject
+    materials: List[MaterialSummary] = []
+    exam_content: str = Field(min_length=1)
+    user_answers: str = Field(min_length=1)
+
+
+class DailyPlanModule(BaseModel):
+    id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    estimated_minutes: int = Field(default=45, ge=1, le=1440)
+    difficulty: Optional[Literal["low", "medium", "high"]] = None
+    importance_rank: Optional[int] = None
+    exam_points: str = ""
+    source_title: str = ""
+    evidence: str = ""
+    module_status: Literal["todo", "doing"] = "todo"
+
+
+class DailyPlanRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    api_config: Optional[ApiConfig] = None
+    invite_code: Optional[str] = Field(default=None, alias="inviteCode")
+    project: StudyProject
+    modules: List[DailyPlanModule] = []
+    extra: Optional[str] = None
+
+
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: Any
 
 
 class ChatCompletionRequest(BaseModel):
-    api_config: ApiConfig
+    model_config = ConfigDict(populate_by_name=True)
+
+    api_config: Optional[ApiConfig] = None
+    invite_code: Optional[str] = Field(default=None, alias="inviteCode")
     messages: List[ChatMessage]
 
 
 class HandwritingRequest(BaseModel):
-    api_config: ApiConfig
+    model_config = ConfigDict(populate_by_name=True)
+
+    api_config: Optional[ApiConfig] = None
+    invite_code: Optional[str] = Field(default=None, alias="inviteCode")
     image_data_urls: List[str] = Field(min_length=1, max_length=6)
     note_hint: Optional[str] = None
 
@@ -84,5 +127,28 @@ class VideoImportResponse(BaseModel):
     metadata: Dict[str, Any] = {}
 
 
+class InviteVerifyRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=80)
+
+
+class InviteVerifyResponse(BaseModel):
+    valid: bool
+    remaining: int
+    remaining_budget_cny: float = Field(alias="remainingBudgetCny")
+    message: str
+
+
+class ChatProxyRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    invite_code: str = Field(min_length=1, max_length=80, alias="inviteCode")
+    messages: List[ChatMessage]
+    model: Optional[str] = None
+
+
 class AiResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     content: str
+    remaining: Optional[int] = None
+    remaining_budget_cny: Optional[float] = Field(default=None, alias="remainingBudgetCny")

@@ -1,53 +1,34 @@
-import { FormEvent, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { FormEvent, useEffect, useMemo, useState, type CSSProperties, type DragEvent } from "react";
+import { AnimatePresence, motion, useMotionValue, useTransform } from "motion/react";
 import {
-  ArrowLeft,
-  BookOpen,
-  Brain,
-  Cards,
-  ChartDonut,
-  CheckCircle,
-  ClipboardText,
-  ClockCountdown,
-  DownloadSimple,
-  FileArrowUp,
-  GearSix,
-  Kanban,
-  Lightning,
-  ListChecks,
-  Notebook,
-  PencilSimple,
-  PlusCircle,
-  ShieldCheck,
-  Sparkle,
-  StackPlus,
-  Target,
-  Timer,
-  Trash,
-  UploadSimple,
-  Video
+  ArrowLeft, BookOpen, Brain, Cards, ChartDonut, CheckCircle, ClipboardText,
+  ClockCountdown, DownloadSimple, FileArrowUp, GearSix, Kanban, Key,
+  Lightning, ListChecks, Notebook, PencilSimple, PlusCircle, ShieldCheck,
+  Sparkle, StackPlus, Target, Ticket, Timer, Trash, UploadSimple, Video
 } from "@phosphor-icons/react";
-import { importVideo, recognizeHandwriting, runAi, runMemorize, runModulePractice, testApiConfig } from "./api";
+import { gradeMock, gradePractice, importVideo, recognizeHandwriting, runAi, runCardsStream, runDailyPlan, runMemorize, runModulePractice, testApiConfig, verifyInviteCode, type AiAuthPayload, type AiResult } from "./api";
+import { BrandMark, RenderHumanText, StatusToast } from "./components/Common";
 import { readAsDataUrl, readDocumentText, readPdfText, readTextFile } from "./fileReaders";
 import { exportMockExamPdf } from "./pdfExport";
 import { createId, storage } from "./storage";
 import type {
-  AiNote,
-  ApiConfig,
-  MaterialKind,
-  Mistake,
-  MockAttempt,
-  ProviderPreset,
-  StudyMaterial,
-  StudyProject,
-  StudyTask,
-  WeakPoint
+  AiNote, AiMode, ApiConfig, CardProgress, InviteState, LearnCard,
+  MaterialKind, Mistake, MistakeFilter, MockAttempt, ProviderPreset,
+  StudyMaterial, StudyProject, StudyTask, WeakPoint
 } from "./types";
+import {
+  compactTitle, dateKey, dateLabel, daysLeft, difficultyLabel,
+  displayModuleTitle, extractModuleTitle, humanReadableAiText,
+  isGenericModuleTitle, isGenericModuleText, isStudyModule,
+  materialKindLabel, moduleKey, moduleOnlyBelongsToMaterial,
+  moduleSourceContext, moduleStatus, normalizeMinutes, nowIso,
+  parseCardsFromAi, parseDailyPlan, parseDifficulty, parseMockQuestions,
+  parseModulesFromPlan, parsePracticeQuestions, parsePriority,
+  priorityLabel, statusTone, stripMarkdown, taskOrder, toProjectPayload,
+  type ModuleDifficulty, type ModulePriority, type ModuleStatus
+} from "./utils";
 
-type ProjectTab = "overview" | "materials" | "plan" | "mock" | "module" | "result" | "review";
-type ModuleStatus = "todo" | "doing" | "done";
-type ModulePriority = "low" | "medium" | "high";
-type ModuleDifficulty = "low" | "medium" | "high";
+type ProjectTab = "overview" | "materials" | "plan" | "mock" | "gap" | "module" | "result" | "review";
 type SetupStep = "intro" | "flow" | "api" | "project";
 type UploadQueueItem = {
   id: string;
@@ -110,6 +91,7 @@ const visibleTabs: { tab: ProjectTab; label: string }[] = [
   { tab: "materials", label: "资料" },
   { tab: "plan", label: "计划" },
   { tab: "mock", label: "模拟考" },
+  { tab: "gap", label: "查漏补缺" },
   { tab: "review", label: "临考速背" }
 ];
 
@@ -125,6 +107,7 @@ const tabIcons: Record<ProjectTab, typeof ChartDonut> = {
   materials: FileArrowUp,
   plan: Kanban,
   mock: ClipboardText,
+  gap: Target,
   module: Brain,
   result: Sparkle,
   review: Cards
@@ -137,489 +120,10 @@ const setupIcons: Record<SetupStep, typeof Sparkle> = {
   project: Target
 };
 
-const knowledgeTerms = [
-  "操作系统引论",
-  "进程同步",
-  "进程通信",
-  "进程调度",
-  "处理器调度",
-  "线程",
-  "进程",
-  "互斥",
-  "信号量",
-  "管程",
-  "死锁",
-  "内存管理",
-  "虚拟存储",
-  "页面置换",
-  "分页",
-  "分段",
-  "文件目录",
-  "文件管理",
-  "磁盘调度",
-  "磁盘存储",
-  "设备管理",
-  "输入输出",
-  "I/O"
-];
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function dateKey(date = new Date()) {
-  return date.toISOString().slice(0, 10);
-}
-
-function daysLeft(date: string) {
-  if (!date) return "-";
-  const target = new Date(`${date}T23:59:59`);
-  return Math.max(0, Math.ceil((target.getTime() - Date.now()) / 86400000));
-}
-
-function normalizeMinutes(value: number) {
-  if (!Number.isFinite(value)) return 30;
-  return Math.max(10, Math.min(480, Math.round(value)));
-}
-
-function moduleStatus(task: StudyTask): ModuleStatus {
-  if (task.module_status) return task.module_status;
-  return task.status === "done" ? "done" : "todo";
-}
-
-function materialKindLabel(material: StudyMaterial) {
-  const labels: Record<MaterialKind, string> = {
-    pdf: "PDF 课件 · 文字和页面识别",
-    document: "Word / DOC 资料",
-    markdown: "Markdown 笔记",
-    text: "手动文本",
-    file: "文本文件",
-    handwriting: "手写笔记",
-    video: "视频字幕"
-  };
-  return labels[material.kind] || material.kind;
-}
-
-function stripMarkdown(text: string) {
-  return text
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```/g, ""))
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/(\*\*|__)(.*?)\1/g, "$2")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/^\s{0,3}>\s?/gm, "")
-    .replace(/^\s*[-—–_]{3,}\s*$/gm, "")
-    .replace(/^\s*[-*]\s+/gm, "• ")
-    .replace(/[*_~#]+/g, "")
-    .trim();
-}
-
-function isDividerLine(text: string) {
-  return /^[-—–_]{3,}$/.test(text.trim());
-}
-
-function tableCells(line: string) {
-  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "").trim();
-  return trimmed.includes("|")
-    ? trimmed.split("|").map((cell) => cell.trim()).filter(Boolean)
-    : trimmed.split(/\s+/).map((cell) => cell.trim()).filter(Boolean);
-}
-
-function isTableSeparator(line: string) {
-  const cells = tableCells(line);
-  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function parseTableBlock(lines: string[]) {
-  const separatorIndex = lines.findIndex(isTableSeparator);
-  if (separatorIndex <= 0) return null;
-  const headers = tableCells(lines[separatorIndex - 1]);
-  if (headers.length < 2) return null;
-  const rows = lines
-    .slice(separatorIndex + 1)
-    .map(tableCells)
-    .filter((cells) => cells.length === headers.length);
-  return rows.length ? { headers, rows } : null;
-}
-
-function previewText(text: string, max = 220) {
-  return stripMarkdown(text).replace(/\n{3,}/g, "\n\n").slice(0, max);
-}
-
-function compactTitle(raw: string, fallback: string) {
-  const cleaned = stripMarkdown(raw)
-    .replace(/^(模块|知识点|名称|标题)\s*[:：]?\s*/i, "")
-    .replace(/优先级\s*[:：]?\s*[高中低]/g, "")
-    .replace(/预计(学习)?时间\s*[:：]?\s*\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
-    .trim();
-  const firstPart = cleaned.split(/[：:。；;，,\n（(]/)[0]?.trim();
-  const title = (firstPart || cleaned || fallback).replace(/\s+/g, " ");
-  return title.length > 18 ? `${title.slice(0, 18)}...` : title;
-}
-
-function getJsonArrayText(text: string) {
-  const cleaned = stripMarkdown(text);
-  const start = cleaned.indexOf("[");
-  const end = cleaned.lastIndexOf("]");
-  return start >= 0 && end > start ? cleaned.slice(start, end + 1) : "";
-}
-
-function jsonModulesToHumanText(text: string) {
-  const jsonText = getJsonArrayText(text);
-  if (!jsonText) return "";
-  try {
-    const data = JSON.parse(jsonText);
-    if (!Array.isArray(data)) return "";
-    const modules = data
-      .map((item) => {
-        if (!item || typeof item !== "object") return "";
-        const record = item as Record<string, unknown>;
-        const title = String(record.title || record.name || record.module || record.moduleName || "").trim();
-        if (!title) return "";
-        const minutes = record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes;
-        const priority = String(record.priority || "").trim();
-        const note = String(record.note || record.reason || record.description || record.practice || "").trim();
-        return [
-          `模块：${title}`,
-          minutes ? `预计时间：${minutes} 分钟` : "",
-          priority ? `优先级：${priority}` : "",
-          note ? `说明：${note}` : ""
-        ].filter(Boolean).join("\n");
-      })
-      .filter(Boolean);
-    return modules.join("\n\n");
-  } catch {
-    return "";
-  }
-}
-
-function humanReadableAiText(text: string) {
-  return jsonModulesToHumanText(text) || stripMarkdown(text);
-}
-
-function renderHumanText(text: string) {
-  const blocks = humanReadableAiText(text)
-    .split(/\n{2,}/)
-    .map((block) => block.split(/\n/).map((line) => line.trim()).filter((line) => line && !isDividerLine(line)).join("\n").trim())
-    .filter(Boolean);
-  if (!blocks.length) return <p className="muted">暂无内容。</p>;
-  return (
-    <div className="ai-text">
-      {blocks.map((block, index) => {
-        const lines = block.split(/\n/).map((line) => line.trim()).filter(Boolean);
-        const table = parseTableBlock(lines);
-        if (table) {
-          return (
-            <table className="ai-table" key={index}>
-              <thead>
-                <tr>{table.headers.map((header) => <th key={header}>{header}</th>)}</tr>
-              </thead>
-              <tbody>
-                {table.rows.map((row, rowIndex) => (
-                  <tr key={`${index}-${rowIndex}`}>
-                    {row.map((cell, cellIndex) => <td key={`${cell}-${cellIndex}`}>{cell}</td>)}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          );
-        }
-        const isList = lines.length > 1 && lines.every((line) => line.startsWith("• "));
-        if (isList) {
-          return (
-            <ul key={index}>
-              {lines.map((line) => <li key={line}>{line.replace(/^•\s*/, "")}</li>)}
-            </ul>
-          );
-        }
-        return <p key={index}>{block}</p>;
-      })}
-    </div>
-  );
-}
-
-function statusTone(message: string) {
-  if (/失败|错误|没|先|不能|要填|不足|无响应|失败|异常/.test(message)) return "danger";
-  if (/已|完成|成功|保存|加入|导入|生成|记录/.test(message)) return "success";
-  return "neutral";
-}
-
-function taskOrder(task: StudyTask, fallback: number) {
-  return typeof task.order === "number" ? task.order : fallback;
-}
-
-function toProjectPayload(project: StudyProject) {
-  return {
-    subject: project.subject,
-    exam_date: project.exam_date,
-    daily_minutes: project.daily_minutes,
-    target_score: project.target_score,
-    weak_points: project.weak_points
-  };
-}
-
-function parsePriority(line: string): ModulePriority {
-  if (/high/i.test(line)) return "high";
-  if (/low/i.test(line)) return "low";
-  if (/重要排名\s*[:：]?\s*[1-3]\b|高|重要|核心|优先/.test(line)) return "high";
-  if (/低|选学|有空/.test(line)) return "low";
-  return "medium";
-}
-
-function parseDifficulty(text: string): ModuleDifficulty {
-  const cleaned = stripMarkdown(text);
-  const match = cleaned.match(/难度\s*[:：]\s*(低|中|高|简单|一般|困难)/);
-  const value = match?.[1] || cleaned;
-  if (/high/i.test(value)) return "high";
-  if (/low/i.test(value)) return "low";
-  if (/高|困难|难/.test(value)) return "high";
-  if (/低|简单|易/.test(value)) return "low";
-  return "medium";
-}
-
-function difficultyLabel(value?: ModuleDifficulty) {
-  if (value === "high") return "难度高";
-  if (value === "low") return "难度低";
-  return "难度中";
-}
-
-function priorityLabel(value?: ModulePriority) {
-  if (value === "high") return "高重要";
-  if (value === "low") return "低重要";
-  return "中重要";
-}
-
-function BrandMark({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className={compact ? "brand-lockup compact" : "brand-lockup"}>
-      <span className="logo-mark" aria-hidden="true">
-        <span>K</span>
-      </span>
-      <span>
-        <strong>考搭子</strong>
-        <small>KaoBuddy</small>
-      </span>
-    </div>
-  );
-}
-
-function StatusToast({ className, message }: { className: string; message: string }) {
-  const Icon = className.includes("danger") ? Lightning : className.includes("success") ? CheckCircle : Sparkle;
-  return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key={message}
-        className={className}
-        aria-live="polite"
-        initial={{ opacity: 0, y: -10, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: -8, scale: 0.98 }}
-        transition={{ duration: 0.18 }}
-      >
-        <Icon size={18} weight="duotone" />
-        <span>{message}</span>
-      </motion.div>
-    </AnimatePresence>
-  );
-}
-
-function extractNumber(text: string, patterns: RegExp[]) {
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      const value = Number(match[1]);
-      if (Number.isFinite(value)) return value;
-    }
-  }
-  return undefined;
-}
-
-function extractField(text: string, names: string[]) {
-  const label = names.join("|");
-  const pattern = new RegExp(`(?:${label})\\s*[:：]\\s*([^；;\\n]+)`);
-  return stripMarkdown(text.match(pattern)?.[1] || "").trim();
-}
-
-function extractExamPoints(text: string) {
-  return extractField(text, ["考察内容", "考查内容", "考点内容", "考试内容", "会考什么", "重点"]);
-}
-
-function extractModuleTitle(line: string) {
-  const cleaned = stripMarkdown(line)
-    .replace(/预计(学习)?时间\s*[:：]?\s*\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
-    .replace(/预计完成时间\s*[:：]?\s*\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
-    .replace(/难度\s*[:：]\s*(低|中|高|简单|一般|困难)/g, "")
-    .replace(/重要(程度)?排名\s*[:：]?\s*\d+/g, "")
-    .replace(/\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
-    .replace(/^(第\s*\d+\s*(天|章|页)\s*)+/g, "")
-    .trim();
-  const explicit = cleaned.match(/(?:模块名称|知识点名称|模块名|知识点|考点|主题)\s*[:：]\s*([^，。；;\n｜|]+?)(?:\s+预计|$|[，。；;\n｜|])/i);
-  const pipeFirst = cleaned.split(/[｜|]/)[0]?.trim();
-  const candidate = (explicit?.[1] || pipeFirst || cleaned)
-    .replace(/^(模块|知识点|考点)\s*\d*\s*[:：]?\s*/i, "")
-    .replace(/^(名称|标题)\s*[:：]?\s*/i, "")
-    .replace(/\s+/g, "");
-  const term = knowledgeTerms.find((item) => cleaned.includes(item));
-  if (!candidate) return term || "";
-  if (candidate.length < 2 || candidate.length > 16) return term || "";
-  if (/第\s*\d+\s*(天|章|页)|每天|天数|高频|聚焦|高效|综合|复习|练习|任务|计划|安排|资料|时间|完成|根据|模块$/.test(candidate)) return term || "";
-  return candidate;
-}
-
-function isGenericModuleText(text: string) {
-  const cleaned = stripMarkdown(text).replace(/\s+/g, "");
-  return /第\d+天|每日任务|天数|全真模拟|模拟测试|模拟卷|模考|错题回顾|串联|综合复习|复习计划|练习安排|学习安排|高效利用时间|聚焦高频|高频考点|补充要求|建议通读|选择题相关模块/.test(cleaned);
-}
-
-function isGenericModuleTitle(title: string) {
-  const cleaned = stripMarkdown(title).replace(/\s+/g, "");
-  return !cleaned || /^(好的|关于时间|知识点|模块|计划|任务|复习|练习)$/.test(cleaned) || isGenericModuleText(cleaned);
-}
-
-function displayModuleTitle(title: string, note?: string) {
-  const cleaned = stripMarkdown(title).replace(/\s+/g, "");
-  const extracted = extractModuleTitle(cleaned) || extractModuleTitle(note || "");
-  return extracted || compactTitle(cleaned, "知识点");
-}
-
-function isStudyModule(item: StudyTask) {
-  const title = displayModuleTitle(item.title, item.note || item.exam_points);
-  if (!title || title === "知识点") return false;
-  return !isGenericModuleTitle(title) && !isGenericModuleTitle(item.title);
-}
-
-function parseModulesFromPlan(content: string, projectId: string, noteId: string, existingCount: number): StudyTask[] {
-  const jsonText = getJsonArrayText(content);
-  if (jsonText) {
-    try {
-      const data = JSON.parse(jsonText);
-      if (Array.isArray(data)) {
-        const seen = new Set<string>();
-        return data.flatMap((item, index) => {
-          if (!item || typeof item !== "object") return [];
-          const record = item as Record<string, unknown>;
-          const rawTitle = String(record.title || record.name || record.module || record.moduleName || "");
-          const note = String(record.note || record.reason || record.description || record.practice || "");
-          const examPoints = String(record.exam_points || record.examPoints || record.points || record.content || record.test_points || note || "");
-          const title = extractModuleTitle(rawTitle) || extractModuleTitle(note) || extractModuleTitle(examPoints);
-          if (!title || isGenericModuleTitle(title) || isGenericModuleTitle(rawTitle)) return [];
-          if (!title || seen.has(title)) return [];
-          seen.add(title);
-          const rawMinutes = Number(record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes);
-          const rawRank = Number(record.importance_rank ?? record.importanceRank ?? record.rank);
-          const line = humanReadableAiText(JSON.stringify([record]));
-          return [{
-            id: createId("module"),
-            project_id: projectId,
-            title,
-            date: dateKey(),
-            estimated_minutes: Number.isFinite(rawMinutes) ? normalizeMinutes(rawMinutes) : 45,
-            status: "todo",
-            module_status: "todo",
-            priority: parsePriority(String(record.priority || "")),
-            difficulty: parseDifficulty(String(record.difficulty || record.level || "")),
-            importance_rank: Number.isFinite(rawRank) ? rawRank : existingCount + index + 1,
-            exam_points: stripMarkdown(examPoints),
-            order: existingCount + index,
-            source_note_id: noteId,
-            note: line || note || rawTitle,
-            created_at: nowIso(),
-            updated_at: nowIso()
-          }];
-        });
-      }
-    } catch {
-      // Fall back to line parsing below.
-    }
-  }
-  const blockText = stripMarkdown(content);
-  const moduleBlocks = blockText
-    .split(/(?=模块\s*[:：])/)
-    .map((block) => block.trim())
-    .filter((block) => /^模块\s*[:：]/.test(block));
-  if (moduleBlocks.length) {
-    const seen = new Set<string>();
-    return moduleBlocks.flatMap((block, index) => {
-      const title = extractModuleTitle(block);
-      if (!title || seen.has(title) || isGenericModuleTitle(title)) return [];
-      seen.add(title);
-      const minutesMatch = block.match(/(?:预计(?:完成|学习)?时间|预计时间)\s*[:：]?\s*(\d+)\s*(分钟|min)/i);
-      const hourMatch = block.match(/(\d+(?:\.\d+)?)\s*(小时|h)/i);
-      const estimatedMinutes = minutesMatch
-        ? normalizeMinutes(Number(minutesMatch[1]))
-        : hourMatch
-          ? normalizeMinutes(Number(hourMatch[1]) * 60)
-          : 45;
-      const rank = extractNumber(block, [/重要(?:程度)?排名\s*[:：]?\s*(\d+)/, /排名\s*[:：]?\s*(\d+)/]);
-      const examPoints = extractField(block, ["说明", "考察内容", "考查内容", "考点内容", "考试内容", "会考什么", "重点"]);
-      return [{
-        id: createId("module"),
-        project_id: projectId,
-        title,
-        date: dateKey(),
-        estimated_minutes: estimatedMinutes,
-        status: "todo",
-        module_status: "todo",
-        priority: parsePriority(block),
-        difficulty: parseDifficulty(block),
-        importance_rank: rank || existingCount + index + 1,
-        exam_points: examPoints,
-        order: existingCount + index,
-        source_note_id: noteId,
-        note: block,
-        created_at: nowIso(),
-        updated_at: nowIso()
-      }];
-    });
-  }
-
-  const rawLines = content
-    .split(/\n+/)
-    .map((line) => stripMarkdown(line).replace(/^[\s\-*•\d.、)]+/, "").trim())
-    .filter((line) => line.length >= 2);
-  const candidateLines = rawLines
-    .filter((line) => /模块名称|知识点名称|模块名|知识点|考点|主题|预计|分钟|小时/.test(line))
-    .slice(0, 36);
-  const lines = candidateLines.length ? candidateLines : rawLines.slice(0, 24);
-  const seen = new Set<string>();
-  return lines.flatMap((line, index) => {
-    const title = extractModuleTitle(line);
-    if (!title || seen.has(title) || isGenericModuleTitle(title) || isGenericModuleText(line)) return [];
-    seen.add(title);
-    const minutesMatch = line.match(/(?:预计(?:完成|学习)?时间\s*[:：]?\s*)?(\d+)\s*(分钟|min)/i);
-    const hourMatch = line.match(/(\d+(?:\.\d+)?)\s*(小时|h)/i);
-    const estimatedMinutes = minutesMatch
-      ? normalizeMinutes(Number(minutesMatch[1]))
-      : hourMatch
-        ? normalizeMinutes(Number(hourMatch[1]) * 60)
-        : 45;
-    const rank = extractNumber(line, [/重要(?:程度)?排名\s*[:：]?\s*(\d+)/, /排名\s*[:：]?\s*(\d+)/]);
-    const examPoints = extractExamPoints(line);
-    return [{
-      id: createId("module"),
-      project_id: projectId,
-      title,
-      date: dateKey(),
-      estimated_minutes: estimatedMinutes,
-      status: "todo",
-      module_status: "todo",
-      priority: parsePriority(line),
-      difficulty: parseDifficulty(line),
-      importance_rank: rank || existingCount + index + 1,
-      exam_points: examPoints,
-      order: existingCount + index,
-      source_note_id: noteId,
-      note: line,
-      created_at: nowIso(),
-      updated_at: nowIso()
-    }];
-  });
-}
 
 export default function App() {
   const [apiConfig, setApiConfig] = useState<ApiConfig>(storage.getApiConfig() || defaultApiConfig);
+  const [inviteState, setInviteState] = useState<InviteState>(() => storage.getInviteState());
   const [showAdvancedApi, setShowAdvancedApi] = useState(false);
   const [projects, setProjects] = useState<StudyProject[]>([]);
   const [materials, setMaterials] = useState<StudyMaterial[]>([]);
@@ -648,6 +152,27 @@ export default function App() {
   const [dismissedIds, setDismissedIds] = useState<string[]>([]);
   const [lastDismissedId, setLastDismissedId] = useState("");
   const [dismissingId, setDismissingId] = useState("");
+  const [planMode, setPlanMode] = useState<"modules" | "daily">("modules");
+  const [generationAbort, setGenerationAbort] = useState<AbortController | null>(null);
+  const [mistakeFilter, setMistakeFilter] = useState<MistakeFilter>("all");
+  const [expandedMistakeId, setExpandedMistakeId] = useState("");
+  const [editingMistakeId, setEditingMistakeId] = useState("");
+  const [editingWeakPointId, setEditingWeakPointId] = useState("");
+  const [cardProgress, setCardProgress] = useState<Record<string, CardProgress>>({});
+  const [cardLearningRound, setCardLearningRound] = useState(1);
+  const [currentCardIndex, setCurrentCardIndex] = useState(0);
+  const [isCardFlipped, setIsCardFlipped] = useState(false);
+  const [cardQueue, setCardQueue] = useState<LearnCard[]>([]);
+  const [streamingCards, setStreamingCards] = useState<LearnCard[]>([]);
+  const [isStreamingCards, setIsStreamingCards] = useState(false);
+  const [streamingAbort, setStreamingAbort] = useState<AbortController | null>(null);
+  const [showPracticeGrading, setShowPracticeGrading] = useState(false);
+  const [practiceGradingNote, setPracticeGradingNote] = useState<AiNote | null>(null);
+  const [practiceAnswers, setPracticeAnswers] = useState<Record<string, string>>({});
+  const [mockExamState, setMockExamState] = useState<"list" | "taking" | "scored">("list");
+  const [activeMockAttempt, setActiveMockAttempt] = useState<MockAttempt | null>(null);
+  const [mockUserAnswers, setMockUserAnswers] = useState<Record<string, string>>({});
+  const [mockScoringResult, setMockScoringResult] = useState<string | null>(null);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [resultNote, setResultNote] = useState<AiNote | null>(null);
   const [status, setStatus] = useState("准备好了。");
@@ -669,6 +194,8 @@ export default function App() {
     setMaterials(materialRows.sort((a, b) => b.created_at.localeCompare(a.created_at)));
     setNotes(noteRows.sort((a, b) => b.created_at.localeCompare(a.created_at)));
     setTasks(taskRows.sort((a, b) => taskOrder(a, 0) - taskOrder(b, 0)));
+    setMistakes(mistakeRows.sort((a, b) => b.created_at.localeCompare(a.created_at)));
+    setWeakPoints(weakPointRows.sort((a, b) => b.updated_at.localeCompare(a.updated_at)));
     setMistakes(mistakeRows.sort((a, b) => b.created_at.localeCompare(a.created_at)));
     setWeakPoints(weakPointRows.sort((a, b) => b.updated_at.localeCompare(a.updated_at)));
     setMockAttempts(mockRows.sort((a, b) => b.created_at.localeCompare(a.created_at)));
@@ -715,6 +242,29 @@ export default function App() {
   const progress = visibleModules.length ? Math.round((completedModules / visibleModules.length) * 100) : 0;
   const busy = Boolean(busyLabel);
   const currentFocusModule = visibleModules.find((item) => moduleStatus(item) !== "done");
+  const todayKey = dateKey();
+  const todayModules = useMemo(
+    () => visibleModules.filter((item) => item.date === todayKey && moduleStatus(item) !== "done"),
+    [visibleModules, todayKey]
+  );
+  const overdueModules = useMemo(
+    () => visibleModules.filter((item) => item.date && item.date < todayKey && moduleStatus(item) !== "done"),
+    [visibleModules, todayKey]
+  );
+  const dailyPlanGroups = useMemo(() => {
+    const groups = new Map<string, StudyTask[]>();
+    visibleModules.filter((item) => moduleStatus(item) !== "done").forEach((item) => {
+      const date = item.date || todayKey;
+      groups.set(date, [...(groups.get(date) || []), item]);
+    });
+    return Array.from(groups.entries())
+      .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
+      .map(([date, items]) => ({
+        date,
+        items: items.sort((a, b) => taskOrder(a, 0) - taskOrder(b, 0)),
+        totalMinutes: items.reduce((sum, item) => sum + item.estimated_minutes, 0)
+      }));
+  }, [visibleModules, todayKey]);
   const selectedModule = selectedModuleId
     ? scopedModules.find((item) => item.id === selectedModuleId) || null
     : null;
@@ -722,6 +272,11 @@ export default function App() {
   const currentResultNote = resultNote || scopedNotes[0] || null;
   const statusMessage = busy ? busyLabel : status;
   const statusClass = `status ${busy ? "loading" : statusTone(statusMessage)}`;
+  const authPayload = useMemo<AiAuthPayload>(() => (
+    inviteState.aiMode === "invite"
+      ? { inviteCode: inviteState.inviteCode.trim() }
+      : { api_config: apiConfig }
+  ), [apiConfig, inviteState.aiMode, inviteState.inviteCode]);
 
   function projectProgress(projectId: string) {
     const projectModules = tasks.filter((task) => task.project_id === projectId && isStudyModule(task));
@@ -740,6 +295,44 @@ export default function App() {
       return false;
     }
     return true;
+  }
+
+  function requireAi() {
+    if (inviteState.aiMode === "invite") {
+      if (!inviteState.inviteCode.trim()) {
+        setStatus("先填邀请码，再让 AI 干活。");
+        return false;
+      }
+      return true;
+    }
+    return requireApi();
+  }
+
+  function saveInviteState(nextState: InviteState) {
+    setInviteState(nextState);
+    storage.saveInviteState(nextState);
+  }
+
+  async function verifyInvite() {
+    const code = inviteState.inviteCode.trim();
+    if (!code) return setStatus("先填邀请码。");
+    setBusyLabel("正在验证邀请码...");
+    try {
+      const result = await verifyInviteCode(code);
+      const nextState: InviteState = {
+        inviteCode: code.toUpperCase(),
+        remaining: result.remaining,
+        remainingBudgetCny: result.remainingBudgetCny,
+        validatedAt: nowIso(),
+        aiMode: "invite",
+      };
+      saveInviteState(nextState);
+      setStatus(result.valid ? `${result.message}，还可用 ${result.remaining} 次。` : result.message);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "邀请码验证失败。");
+    } finally {
+      setBusyLabel("");
+    }
   }
 
   function requireProject() {
@@ -763,6 +356,7 @@ export default function App() {
   async function saveApi(event?: FormEvent) {
     event?.preventDefault();
     storage.saveApiConfig(apiConfig);
+    saveInviteState({ ...inviteState, aiMode: "custom" });
     setStatus("API 配置已保存在当前浏览器。");
   }
 
@@ -772,6 +366,7 @@ export default function App() {
     try {
       const result = await testApiConfig(apiConfig);
       storage.saveApiConfig(apiConfig);
+      saveInviteState({ ...inviteState, aiMode: "custom" });
       setStatus(`连接测试完成：${result}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "连接测试失败。");
@@ -788,14 +383,14 @@ export default function App() {
     }
     if (setupStep === "flow") {
       setSetupStep("api");
-      setStatus("下一步先填 API Key。");
+      setStatus("下一步先填邀请码，或者连接自己的 API Key。");
       return;
     }
     if (setupStep === "api") {
-      if (!requireApi()) return;
-      storage.saveApiConfig(apiConfig);
+      if (!requireAi()) return;
+      if (inviteState.aiMode === "custom") storage.saveApiConfig(apiConfig);
       setSetupStep("project");
-      setStatus("AI 配置已保存，现在创建第一个考试项目。");
+      setStatus("AI 连接方式已保存，现在创建第一个考试项目。");
     }
   }
 
@@ -808,9 +403,9 @@ export default function App() {
   async function createProject(event: FormEvent) {
     event.preventDefault();
     const editingProject = projects.find((project) => project.id === editingProjectId);
-    if (!editingProject && !projects.length && !apiConfig.api_key.trim()) {
+    if (!editingProject && !projects.length && !requireAi()) {
       setSetupStep("api");
-      return setStatus("先填 API Key，再创建第一个项目。");
+      return;
     }
     if (!projectDraft.subject.trim()) return setStatus("科目要填一下，比如高数、法考、期末英语。");
     if (!projectDraft.exam_date) return setStatus("考试日期也要填，不然我没法算倒计时。");
@@ -926,7 +521,7 @@ export default function App() {
           updateUploadItem(queueId, { state: "failed", message: error instanceof Error ? error.message : "导入失败" });
         }
       }
-      setStatus(`已导入 ${successCount} 个文件。${successCount < selected.length ? "有文件失败，队列里可以看到原因。" : ""}`);
+      setStatus(`已导入 ${successCount} 个文件。${successCount < selected.length ? "有文件失败，队列里可以看到原因。" : "下一步去计划页生成知识点模块。"}`);
       await refresh();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "文件读取失败。");
@@ -938,7 +533,7 @@ export default function App() {
   async function handleHandwriting(files: FileList | null) {
     if (!requireProject()) return;
     if (!files?.length) return setStatus("先选择手写图片或 PDF。");
-    if (!requireApi()) return;
+    if (!requireAi()) return;
     setBusyLabel("正在识别手写笔记...");
     try {
       const selected = Array.from(files).slice(0, 6);
@@ -946,17 +541,17 @@ export default function App() {
       const imageFiles = selected.filter((file) => !file.name.toLowerCase().endsWith(".pdf"));
       const pdfText = (await Promise.all(pdfFiles.map(readPdfText))).join("\n\n");
       const imageDataUrls = await Promise.all(imageFiles.map(readAsDataUrl));
-      const recognized = imageDataUrls.length ? await recognizeHandwriting(apiConfig, imageDataUrls, handwritingHint) : "";
+      const recognized = imageDataUrls.length ? await recognizeHandwriting(authPayload, imageDataUrls, handwritingHint) : null;
       await storage.saveMaterial({
         id: createId("material"),
         project_id: activeProject!.id,
         title: handwritingHint.trim() || "手写笔记",
         kind: "handwriting",
-        content: [recognized, pdfText].filter(Boolean).join("\n\n") || "这份手写资料暂时没有识别出文本，请手动补充重点。",
+        content: [recognized?.content || "", pdfText].filter(Boolean).join("\n\n") || "这份手写资料暂时没有识别出文本，请手动补充重点。",
         image_data_urls: imageDataUrls,
         created_at: nowIso()
       });
-      setStatus("手写笔记识别完成，已保存到资料库。");
+      setStatus("手写笔记识别完成，已保存到资料库。下一步去计划页生成知识点模块。");
       await refresh();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "手写识别失败。");
@@ -978,13 +573,13 @@ export default function App() {
         project_id: activeProject!.id,
         title: result.title || "视频资料",
         kind: "video",
-        content: content || "没有抓到字幕。请手动补充这条视频的课程重点或字幕。",
+        content: [result.description, result.subtitles].filter(Boolean).join("\n\n") || "没有抓到字幕。请手动补充这条视频的课程重点或字幕。",
         source_url: result.source_url,
         warnings: result.warnings,
         created_at: nowIso()
       });
       setVideoUrl("");
-      setStatus(result.subtitles ? "视频字幕已导入资料库。" : result.warnings[0] || "视频信息已保存，但没有抓到公开字幕。");
+      setStatus(result.subtitles ? "视频字幕已导入资料库。下一步去计划页生成知识点模块。" : result.warnings[0] || "视频信息已保存，但没有抓到公开字幕。下一步可以去计划页生成知识点模块。");
       await refresh();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "视频导入失败。");
@@ -994,26 +589,28 @@ export default function App() {
   }
 
   async function runMode(mode: "plan" | "teach" | "practice" | "mock-exam", title: string, extraOverride?: string) {
-    if (!requireProject() || !requireApi()) return;
+    if (!requireProject() || !requireAi()) return;
     if (!scopedMaterials.length && mode === "plan") {
       setStatus("先导入资料，再生成知识点模块。现在不会按空资料乱编计划。");
       setActiveTab("materials");
       return;
     }
     setBusyLabel(`正在生成${title}...`);
+    const abort = new AbortController();
+    setGenerationAbort(abort);
     try {
-      const content = await runAi(mode, {
-        api_config: apiConfig,
+      const result = await runAi(mode, {
+        ...authPayload,
         project: toProjectPayload(activeProject!),
-        materials: scopedMaterials.map(({ title, kind, content }) => ({ title, kind, content })),
+        materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
         extra: extraOverride ?? extra
-      });
+      }, abort.signal);
       const note: AiNote = {
         id: createId("note"),
         project_id: activeProject!.id,
         mode: mode === "mock-exam" ? "mock" : mode,
         title,
-        content: stripMarkdown(content),
+        content: stripMarkdown(result.content),
         created_at: nowIso()
       };
       await storage.saveNote(note);
@@ -1036,15 +633,83 @@ export default function App() {
       setStatus(`${title} 已生成，已经打开结果页。`);
       await refresh();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "AI 请求失败。");
+      if ((error as Error).name === "AbortError") { /* cancelGeneration() already sets status */ }
+      else { setStatus(error instanceof Error ? error.message : "AI 请求失败。"); }
     } finally {
+      setGenerationAbort(null);
       setBusyLabel("");
     }
   }
 
+  function cancelGeneration() {
+    if (generationAbort) {
+      generationAbort.abort();
+      setGenerationAbort(null);
+      setBusyLabel("");
+      setStatus("已取消生成。");
+    }
+  }
+
+  async function generateDailyPlan() {
+    if (!requireProject() || !requireAi()) return;
+    const unfinished = visibleModules.filter((item) => moduleStatus(item) !== "done");
+    if (!unfinished.length) return setStatus("没有需要安排的未完成知识点。");
+    setStatus("正在按剩余天数生成每日任务，请耐心等一下。");
+    setBusyLabel("正在生成每日计划...");
+    const abort = new AbortController();
+    setGenerationAbort(abort);
+    try {
+      const result = await runDailyPlan({
+        ...authPayload,
+        project: toProjectPayload(activeProject!),
+        modules: unfinished.map((item) => ({
+          id: item.id,
+          title: displayModuleTitle(item.title, item.note),
+          estimated_minutes: item.estimated_minutes,
+          difficulty: item.difficulty,
+          importance_rank: item.importance_rank,
+          exam_points: item.exam_points || item.note || "",
+          source_title: item.source_title || "",
+          evidence: item.evidence || "",
+          module_status: moduleStatus(item) === "doing" ? "doing" : "todo"
+        })),
+        extra
+      }, abort.signal);
+      const planItems = parseDailyPlan(result.content);
+      if (!planItems.length) return setStatus("AI 没返回可用的日计划，可以再生成一次。");
+      const moduleMap = new Map(unfinished.map((item) => [item.id, item]));
+      const sorted = planItems
+        .filter((item) => moduleMap.has(item.module_id))
+        .sort((a, b) => a.date.localeCompare(b.date) || a.day_order - b.day_order);
+      await Promise.all(sorted.map((planItem, index) => {
+        const mod = moduleMap.get(planItem.module_id)!;
+        return storage.saveTask({ ...mod, date: planItem.date, order: index, updated_at: nowIso() });
+      }));
+      const missing = unfinished.length - new Set(sorted.map((item) => item.module_id)).size;
+      setPlanMode("daily");
+      setStatus(missing > 0 ? `每日计划已生成，${missing} 个模块暂时未被安排。` : "每日计划已生成。");
+      await refresh();
+    } catch (error) {
+      if ((error as Error).name === "AbortError") { /* cancelGeneration() already sets status */ }
+      else { setStatus(error instanceof Error ? error.message : "每日计划生成失败。"); }
+    } finally {
+      setGenerationAbort(null);
+      setBusyLabel("");
+    }
+  }
+
+  async function rescheduleOverdue() {
+    if (!overdueModules.length) return;
+    await Promise.all(overdueModules.map((m) =>
+      storage.saveTask({ ...m, date: todayKey, updated_at: nowIso() })
+    ));
+    setStatus(`已将 ${overdueModules.length} 个逾期模块挪到今天。`);
+    await refresh();
+  }
+
   async function createModulesFromPlan(note: AiNote) {
     if (!activeProject) return;
-    const parsed = parseModulesFromPlan(note.content, activeProject.id, note.id, visibleModules.length);
+    const parsed = parseModulesFromPlan(note.content, activeProject.id, note.id, visibleModules.length, () => createId('module'));
     if (!parsed.length) return setStatus("这份计划没拆出进程、线程这类明确知识点名，可以重新生成或手动新增模块。");
     await Promise.all(parsed.map((item, index) => storage.saveTask({
       ...item,
@@ -1119,6 +784,8 @@ export default function App() {
   async function completeModule(module: StudyTask) {
     await storage.saveTask({ ...module, status: "done", module_status: "done", completed_at: nowIso(), updated_at: nowIso() });
     setStatus("这个知识模块已完成。");
+    setSelectedModuleId("");
+    setActiveTab("plan");
     await refresh();
   }
 
@@ -1134,23 +801,23 @@ export default function App() {
   }
 
   async function generateModuleQuestions(module: StudyTask) {
-    if (!requireProject() || !requireApi()) return;
+    if (!requireProject() || !requireAi()) return;
     if (!scopedMaterials.length) return setStatus("先导入资料，再生成这个知识点的模拟题。");
     const isRefreshing = Boolean(module.practice_questions);
     setBusyLabel(`正在${isRefreshing ? "换一批" : "生成"}「${displayModuleTitle(module.title, module.note)}」的模拟题...`);
     try {
       const moduleTitle = displayModuleTitle(module.title, module.note);
-      const content = await runModulePractice({
-        api_config: apiConfig,
+      const result = await runModulePractice({
+        ...authPayload,
         project: toProjectPayload(activeProject!),
-        materials: scopedMaterials.map(({ title, kind, content }) => ({ title, kind, content })),
+        materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
         extra,
         module_title: moduleTitle,
         exam_points: module.exam_points || module.note || "请根据资料判断。"
       });
       const updated = {
         ...module,
-        practice_questions: stripMarkdown(content),
+        practice_questions: stripMarkdown(result.content),
         updated_at: nowIso()
       };
       await storage.saveTask(updated);
@@ -1165,15 +832,15 @@ export default function App() {
   }
 
   async function generateModuleExplanation(module: StudyTask) {
-    if (!requireProject() || !requireApi()) return;
+    if (!requireProject() || !requireAi()) return;
     if (!scopedMaterials.length) return setStatus("先导入资料，再生成这个知识点的讲解。");
     const moduleTitle = displayModuleTitle(module.title, module.note);
     setBusyLabel(`正在生成「${moduleTitle}」的讲解...`);
     try {
-      const content = await runAi("teach", {
-        api_config: apiConfig,
+      const result = await runAi("teach", {
+        ...authPayload,
         project: toProjectPayload(activeProject!),
-        materials: scopedMaterials.map(({ title, kind, content }) => ({ title, kind, content })),
+        materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
         extra: [
           extra,
           `只讲解这个知识点：${moduleTitle}`,
@@ -1183,7 +850,7 @@ export default function App() {
       });
       await storage.saveTask({
         ...module,
-        explanation: stripMarkdown(content),
+        explanation: stripMarkdown(result.content),
         updated_at: nowIso()
       });
       setSelectedModuleId(module.id);
@@ -1196,15 +863,111 @@ export default function App() {
     }
   }
 
+
+  // ---- Card Learning ----
+
+  async function generateCards(module: StudyTask) {
+    if (!requireProject() || !requireAi()) return;
+    if (!scopedMaterials.length) return setStatus("先导入资料，再生成学习卡片。");
+    const moduleTitle = displayModuleTitle(module.title, module.note);
+    const abort = new AbortController();
+    setStreamingAbort(abort);
+    setStreamingCards([]);
+    setIsStreamingCards(true);
+    setSelectedModuleId(module.id);
+    let fullText = "";
+    try {
+      fullText = await runCardsStream({
+        ...authPayload,
+        project: toProjectPayload(activeProject!),
+        materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
+        extra: [extra, `当前知识点：${moduleTitle}`, `考察内容：${module.exam_points || module.note || "请根据资料判断。"}`, moduleSourceContext(module)].filter(Boolean).join("\n")
+      }, (chunk: string) => {
+        fullText += chunk;
+        const cards = parseCardsFromAi(fullText);
+        if (cards.length) setStreamingCards(cards);
+      }, (err: string) => { setStatus(err); }, abort.signal);
+    } catch (error) {
+      if ((error as Error).name === "AbortError") { setStatus("已取消生成。"); }
+      else { setStatus(error instanceof Error ? error.message : "卡片生成失败。"); }
+      setIsStreamingCards(false); setStreamingAbort(null); return;
+    }
+    setIsStreamingCards(false); setStreamingAbort(null);
+    const cards = parseCardsFromAi(fullText);
+    if (!cards.length) { setStreamingCards([]); return setStatus("AI 没有返回有效的卡片，请重试。"); }
+    await storage.saveTask({ ...module, cards, updated_at: nowIso() });
+    setStatus(`${cards.length} 张学习卡片已生成。`);
+    await refresh();
+    setStreamingCards([]);
+    startCardLearning({ ...module, cards });
+  }
+
+  function cancelCardStreaming() {
+    if (streamingAbort) { streamingAbort.abort(); setStreamingAbort(null); setIsStreamingCards(false); setStreamingCards([]); }
+  }
+
+  function startCardLearning(module: StudyTask) {
+    if (!module.cards?.length) return;
+    const sorted = [...module.cards].sort((a, b) => (a.importance ?? 3) - (b.importance ?? 3));
+    setCardQueue(sorted); setCardProgress({}); setCardLearningRound(1);
+    setCurrentCardIndex(0); setIsCardFlipped(false);
+    setSelectedModuleId(module.id); setShowPracticeGrading(false); setPracticeGradingNote(null);
+    setStatus("开始学习卡片，点击翻卡查看答案。");
+  }
+
+  function toggleCard() { setIsCardFlipped(prev => !prev); }
+
+  function goToNextCard() {
+    setIsCardFlipped(false);
+    if (currentCardIndex + 1 < cardQueue.length) {
+      setCurrentCardIndex(currentCardIndex + 1);
+    }
+  }
+
+  function goToPrevCard() {
+    setIsCardFlipped(false);
+    if (currentCardIndex > 0) {
+      setCurrentCardIndex(currentCardIndex - 1);
+    }
+  }
+
+  function submitCardFeedback(quality: CardProgress) {
+    const card = cardQueue[currentCardIndex];
+    if (!card) return;
+    setCardProgress(prev => ({ ...prev, [card.id]: quality }));
+    setIsCardFlipped(false);
+    if (currentCardIndex + 1 < cardQueue.length) { setCurrentCardIndex(currentCardIndex + 1); }
+    else { finishRound(); }
+  }
+
+  function finishRound() {
+    const roundProgress = { ...cardProgress };
+    const weak = cardQueue.filter(c => roundProgress[c.id] === "uncertain" || roundProgress[c.id] === "unknown");
+    if (weak.length > 0 && cardLearningRound === 1) {
+      setCardQueue(weak); setCardLearningRound(2); setCurrentCardIndex(0);
+      setIsCardFlipped(false); setCardProgress({});
+      setStatus(`第一轮完成！复习 ${weak.length} 张掌握不到位的卡片。`);
+    } else {
+      const mastered = cardQueue.filter(c => roundProgress[c.id] === "mastered").length;
+      setStatus(`学习完成！掌握 ${mastered}/${cardQueue.length} 张卡片。`);
+      exitCardLearning();
+    }
+  }
+
+  function exitCardLearning() {
+    setCardQueue([]); setCardProgress({}); setCardLearningRound(1);
+    setCurrentCardIndex(0); setIsCardFlipped(false);
+  }
+
   async function generateMemorizationContent(module: StudyTask) {
-    if (!requireProject() || !requireApi()) return;
+    if (!requireProject() || !requireAi()) return;
     const moduleTitle = displayModuleTitle(module.title, module.note);
     setBusyLabel(`正在生成「${moduleTitle}」的速背内容...`);
     try {
-      const content = await runMemorize({
-        api_config: apiConfig,
+      const result = await runMemorize({
+        ...authPayload,
         project: toProjectPayload(activeProject!),
-        materials: scopedMaterials.map(({ title, kind, content }) => ({ title, kind, content })),
+        materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
         extra: [
           `当前知识点：${moduleTitle}`,
           `考察内容：${module.exam_points || module.note || "请根据资料判断。"}`
@@ -1212,7 +975,7 @@ export default function App() {
       });
       await storage.saveTask({
         ...module,
-        memorization: stripMarkdown(content),
+        memorization: stripMarkdown(result.content),
         updated_at: nowIso()
       });
       setMemorizeModuleId(module.id);
@@ -1277,30 +1040,62 @@ export default function App() {
         <span className="heading-icon"><ShieldCheck size={20} weight="duotone" /></span>
         <div>
           <h2>连接 AI</h2>
-          <p>Key 只留在当前浏览器里，后端只负责临时转发。</p>
+          <p>可以先用内测邀请码，也可以切到自己的 API Key。</p>
         </div>
       </div>
-      <label>
-        平台
-        <select value={apiConfig.provider_name} onChange={(event) => updatePreset(event.target.value)}>
-          {presets.map((preset) => <option key={preset.provider_name}>{preset.provider_name}</option>)}
-        </select>
-      </label>
-      <label>API Key<input type="password" value={apiConfig.api_key} onChange={(event) => setApiConfig({ ...apiConfig, api_key: event.target.value })} placeholder="粘贴自己的 API Key" /></label>
-      <p className="hint">DeepSeek 的 Key 可以去开放平台创建。复制后粘到这里就好，KaoBuddy 只存在当前浏览器里，请求 AI 时临时转发，不写数据库。</p>
-      <button type="button" className="text-button" onClick={() => setShowAdvancedApi((value) => !value)}>
-        {showAdvancedApi ? "收起高级设置" : "高级设置"}
-      </button>
-      {showAdvancedApi && (
-        <div className="advanced">
-          <label>Base URL<input value={apiConfig.base_url} onChange={(event) => setApiConfig({ ...apiConfig, base_url: event.target.value })} /></label>
-          <label>Model<input value={apiConfig.model} onChange={(event) => setApiConfig({ ...apiConfig, model: event.target.value })} /></label>
-        </div>
+      <div className="plan-mode-toggle">
+        <button
+          type="button"
+          className={inviteState.aiMode === "invite" ? "tab active" : "tab"}
+          onClick={() => saveInviteState({ ...inviteState, aiMode: "invite" })}
+        >
+          <Ticket size={16} weight="duotone" />邀请码
+        </button>
+        <button
+          type="button"
+          className={inviteState.aiMode === "custom" ? "tab active" : "tab"}
+          onClick={() => saveInviteState({ ...inviteState, aiMode: "custom" })}
+        >
+          <Key size={16} weight="duotone" />自带 Key
+        </button>
+      </div>
+      {inviteState.aiMode === "invite" ? (
+        <>
+          <label>邀请码<input value={inviteState.inviteCode} onChange={(event) => setInviteState({ ...inviteState, inviteCode: event.target.value })} placeholder="比如 KAO-V1-DEMO-1" /></label>
+          <p className="hint">
+            {inviteState.validatedAt
+              ? `上次验证：还可用 ${inviteState.remaining} 次，剩余额度约 ${inviteState.remainingBudgetCny} 元。`
+              : "输入邀请码后先验证一次；后续生成计划、讲解、卡片都会自动带上它。"}
+          </p>
+          <div className="actions">
+            <button type="button" onClick={verifyInvite} disabled={busy}><ShieldCheck size={18} weight="bold" />验证邀请码</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <label>
+            平台
+            <select value={apiConfig.provider_name} onChange={(event) => updatePreset(event.target.value)}>
+              {presets.map((preset) => <option key={preset.provider_name}>{preset.provider_name}</option>)}
+            </select>
+          </label>
+          <label>API Key<input type="password" value={apiConfig.api_key} onChange={(event) => setApiConfig({ ...apiConfig, api_key: event.target.value })} placeholder="粘贴自己的 API Key" /></label>
+          <p className="hint">DeepSeek 的 Key 可以去开放平台创建。复制后粘到这里就好，KaoBuddy 只存在当前浏览器里，请求 AI 时临时转发，不写数据库。</p>
+          <button type="button" className="text-button" onClick={() => setShowAdvancedApi((value) => !value)}>
+            {showAdvancedApi ? "收起高级设置" : "高级设置"}
+          </button>
+          {showAdvancedApi && (
+            <div className="advanced">
+              <label>Base URL<input value={apiConfig.base_url} onChange={(event) => setApiConfig({ ...apiConfig, base_url: event.target.value })} /></label>
+              <label>Model<input value={apiConfig.model} onChange={(event) => setApiConfig({ ...apiConfig, model: event.target.value })} /></label>
+            </div>
+          )}
+          <div className="actions">
+            <button type="submit"><GearSix size={18} weight="bold" />保存配置</button>
+            <button type="button" className="secondary" onClick={testApi} disabled={busy}><Lightning size={18} weight="bold" />测试连接</button>
+          </div>
+        </>
       )}
-      <div className="actions">
-        <button type="submit"><GearSix size={18} weight="bold" />保存配置</button>
-        <button type="button" className="secondary" onClick={testApi} disabled={busy}><Lightning size={18} weight="bold" />测试连接</button>
-      </div>
     </form>
   );
 
@@ -1341,26 +1136,22 @@ export default function App() {
   if (!projects.length || showSetup) {
     return (
       <motion.main className="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.24 }}>
-        <StatusToast className={statusClass} message={statusMessage} />
+        <StatusToast className={statusClass} message={statusMessage} onCancel={cancelGeneration} />
         <section className="home-hero app-section">
           <div className="hero-copy">
             <BrandMark />
             <p className="eyebrow">本地备考工作台</p>
             <h1>临时抱佛脚，也要有章法。</h1>
-            <p>用你自己的 AI API，把课件、PDF、手写笔记和视频字幕整理成知识模块、练习和模拟考。资料在本地，节奏你来掌握。</p>
             <div className="hero-actions">
-              <button type="button" onClick={() => setSetupStep("api")}><ShieldCheck size={18} weight="bold" />先连接 AI</button>
-              <button type="button" className="secondary" onClick={() => setSetupStep("project")}><Target size={18} weight="bold" />创建项目</button>
               {!!projects.length && (
                 <button
-                  className="text-button"
                   type="button"
                   onClick={() => {
                     setShowSetup(false);
                     setStatus("已回到项目工作区。");
                   }}
                 >
-                  <ArrowLeft size={18} weight="bold" />回到当前项目
+                  <ArrowLeft size={20} weight="bold" />回到工作台
                 </button>
               )}
             </div>
@@ -1371,7 +1162,7 @@ export default function App() {
               <strong>资料进来，计划出去</strong>
             </div>
             <div className="command-list">
-              <span><FileArrowUp size={18} weight="duotone" />导入课件、笔记、视频字幕</span>
+              <span><FileArrowUp size={18} weight="duotone" />导入课件、教材、往年题、笔记、视频字幕</span>
               <span><Brain size={18} weight="duotone" />拆成能学的知识模块</span>
               <span><ClipboardText size={18} weight="duotone" />刷题、模考、查漏</span>
               <span><Cards size={18} weight="duotone" />临考前一个个斩掉</span>
@@ -1387,10 +1178,7 @@ export default function App() {
                 <button
                   key={item.step}
                   className={index === setupIndex ? "active" : index < setupIndex ? "done" : ""}
-                  onClick={() => {
-                    if (index <= setupIndex) setSetupStep(item.step);
-                    if (index > setupIndex) setStatus("先完成当前步骤，再进入下一步。");
-                  }}
+                  onClick={() => setSetupStep(item.step)}
                   type="button"
                 >
                   <span><StepIcon size={18} weight="duotone" /></span>
@@ -1407,11 +1195,12 @@ export default function App() {
                   <span className="heading-icon"><Sparkle size={20} weight="duotone" /></span>
                   <div>
                     <h2>考搭子能做什么</h2>
-                    <p>先把混乱的复习材料收起来，再拆成今天真的能推进的动作。</p>
+                    <p>先把散乱资料收起来，再变成清晰的复习路线。</p>
                   </div>
                 </div>
-                <p>它是一个本地备考助手。你把课件、教材、笔记、手写资料或视频字幕放进来，它会帮你整理资料、拆知识点、生成复习计划、做模块练习和模拟考。</p>
-                <p>API Key 只保存在你当前浏览器里。KaoBuddy 不做账号、不做云同步，也不会把你的 Key 存到远程服务器。</p>
+                <p>考搭子是一个本地备考助手。你只需要把课件、教材、笔记、手写资料或视频字幕放进来，它会自动整理资料、抽取知识点，并按重要程度生成学习模块。</p>
+                <p>资料越完整，预测越精准。考搭子会根据你导入的内容判断哪些知识点更可能考、哪些需要优先学，帮你把散乱资料变成清晰的复习路线。</p>
+                <p>不用再手动翻课件、抄重点、列计划。内测期间可以使用邀请码体验；额度用完后，也可以切换到自己的 API Key 继续使用。</p>
                 <div className="actions">
                   <button type="button" onClick={goSetupNext}><ListChecks size={18} weight="bold" />下一步：看使用流程</button>
                 </div>
@@ -1536,14 +1325,14 @@ export default function App() {
           </div>
         </header>
 
-        <StatusToast className={statusClass} message={statusMessage} />
+        <StatusToast className={statusClass} message={statusMessage} onCancel={cancelGeneration} />
 
         <nav className="tabs">
           {visibleTabs.map(({ tab, label }) => {
             const TabIcon = tabIcons[tab];
             return (
               <button key={tab} className={activeTab === tab ? "tab active" : "tab"} onClick={() => setActiveTab(tab)}>
-                <TabIcon size={17} weight="duotone" />
+                <TabIcon size={18} weight="duotone" />
                 {label}
               </button>
             );
@@ -1581,11 +1370,37 @@ export default function App() {
               <strong>{scopedMocks[0]?.title || "暂无"}</strong>
               <small>{scopedMocks[0] ? `${scopedMocks[0].duration_minutes} 分钟 · 点击查看` : "模拟考页可以生成模考。"}</small>
             </div>
+            {todayModules.length > 0 && (
+              <div className="panel wide today-panel">
+                <div className="today-panel-head">
+                  <span><ClockCountdown size={18} weight="duotone" />今日任务</span>
+                  <small>{todayModules.length} 个模块 · 预计 {todayModules.reduce((s, m) => s + m.estimated_minutes, 0)} 分钟</small>
+                </div>
+                <div className="today-list">
+                  {todayModules.map((item) => (
+                    <article
+                      key={item.id}
+                      className="today-row"
+                      onClick={() => openModule(item)}
+                    >
+                      <div className="today-row-main">
+                        <strong>{displayModuleTitle(item.title, item.note)}</strong>
+                        <div className="today-row-meta">
+                          <span>{difficultyLabel(item.difficulty)}</span>
+                          {item.priority && <span>{priorityLabel(item.priority)}</span>}
+                        </div>
+                      </div>
+                      <span className={`module-status-dot ${moduleStatus(item)}`} />
+                    </article>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="panel wide next-step-panel">
               <div>
                 <span className="kind-badge">下一步</span>
                 <h2>{scopedMaterials.length ? "把资料拆成知识模块" : "先把资料放进来"}</h2>
-                <p>{scopedMaterials.length ? "资料库已经有内容了，可以去计划页让 AI 按考点拆模块。" : "先导入课件、教材、手写笔记或视频字幕，考搭子才有东西可拆。"}</p>
+                <p>{scopedMaterials.length ? "资料库已经有内容了，可以去计划页让 AI 按考点拆模块。" : "先导入课件、教材、往年题、手写笔记或视频字幕，考搭子才有东西可拆。"}</p>
               </div>
               <button onClick={() => setActiveTab(scopedMaterials.length ? "plan" : "materials")}>
                 <Lightning size={18} weight="bold" />{scopedMaterials.length ? "生成计划" : "去导入资料"}
@@ -1604,7 +1419,7 @@ export default function App() {
                   <p>先快速收进资料库，扫描页和复杂图表后面再慢慢补。</p>
                 </div>
               </div>
-              <label className="file primary-upload"><UploadSimple size={20} weight="bold" />批量上传课件 / 教材（PDF / DOC / DOCX）<input type="file" accept=".pdf,.doc,.docx,.odt,.rtf,.txt,.md,.markdown,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" multiple onChange={(event) => handleFiles(event.target.files)} /></label>
+              <label className="file primary-upload"><UploadSimple size={20} weight="bold" />批量上传课件 / 教材 / 往年题（PDF / DOC / DOCX）<input type="file" accept=".pdf,.doc,.docx,.odt,.rtf,.txt,.md,.markdown,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" multiple onChange={(event) => handleFiles(event.target.files)} /></label>
               <p className="hint">默认会快速读取 PDF 文字层，先把资料放进库里。扫描页、图表和公式这类慢识别，后面单独处理，避免上传时卡太久。</p>
               {!!uploadQueue.length && (
                 <div className="upload-queue">
@@ -1650,81 +1465,110 @@ export default function App() {
               <div className="panel-heading">
                 <span className="heading-icon"><Kanban size={20} weight="duotone" /></span>
                 <div>
-                  <h2>生成知识模块计划</h2>
-                  <p>把资料拆成能拖、能学、能斩的知识点卡片。</p>
+                  <h2>{planMode === "modules" ? "生成知识模块计划" : "日计划"}</h2>
+                  <p>{planMode === "modules" ? "把资料拆成能拖、能学、能斩的知识点卡片。" : "把知识点按剩余天数排到每天，每天聚焦几个模块。"}</p>
                 </div>
               </div>
-              <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 只剩三天，先救选择题相关模块。" /></label>
-              <div className="actions wrap">
-                <button onClick={() => runMode("plan", "知识模块计划")} disabled={busy}><StackPlus size={18} weight="bold" />生成计划</button>
-                {latestPlanNote && (
-                  <button
-                    className="secondary"
-                    onClick={() => {
-                      setResultNote(latestPlanNote);
-                      setActiveTab("result");
-                    }}
-                  >
-                    <Sparkle size={18} weight="bold" />查看计划结果
-                  </button>
+              <div className="plan-mode-toggle">
+                <button className={planMode === "modules" ? "tab active" : "tab"} onClick={() => setPlanMode("modules")}><Kanban size={16} weight="duotone" />知识点模式</button>
+                <button className={planMode === "daily" ? "tab active" : "tab"} onClick={() => setPlanMode("daily")}><ClockCountdown size={16} weight="duotone" />日计划模式</button>
+              </div>
+              {planMode === "modules" ? (
+                <>
+                  <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 只剩三天，先救选择题相关模块。" /></label>
+                  <div className="actions wrap">
+                    <button onClick={() => runMode("plan", "知识模块计划")} disabled={busy}><StackPlus size={18} weight="bold" />生成计划</button>
+                    {latestPlanNote && (
+                      <button className="secondary" onClick={() => { setResultNote(latestPlanNote); setActiveTab("result"); }}>
+                        <Sparkle size={18} weight="bold" />查看计划结果
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  {overdueModules.length > 0 && (
+                    <div className="overdue-banner">
+                      <span><ClockCountdown size={16} weight="duotone" />{overdueModules.length} 个模块已逾期</span>
+                      <button className="mini" onClick={rescheduleOverdue}>全部挪到今天</button>
+                    </div>
+                  )}
+                  <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 每天不超过 90 分钟，先安排重要程度高的模块。" /></label>
+                  <div className="actions wrap">
+                    <button onClick={generateDailyPlan} disabled={busy}><ClockCountdown size={18} weight="bold" />生成每日计划</button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {planMode === "modules" ? (
+              <>
+                <div className="kanban">
+                  {moduleColumns.map((column) => {
+                    const columnModules = visibleModules.filter((item) => moduleStatus(item) === column.status);
+                    return (
+                      <div key={column.status} className="kanban-column" onDragOver={(event) => event.preventDefault()} onDrop={() => moveModule(column.status)}>
+                        <div className="column-head">
+                          <strong>{column.title}</strong>
+                          <small>{column.hint}</small>
+                        </div>
+                        {columnModules.map((item) => (
+                          <article key={item.id} className="module-card" draggable onDragStart={() => setDraggingModuleId(item.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); moveModule(column.status, item.id); }} onClick={() => openModule(item)}>
+                            <strong>{displayModuleTitle(item.title, item.note)}</strong>
+                            <div className="module-meta"><span>{difficultyLabel(item.difficulty)}</span></div>
+                            {moduleStatus(item) !== "done" && <button className="mini" onClick={(event) => { event.stopPropagation(); startModule(item); }}><Lightning size={15} weight="bold" />点击学习</button>}
+                          </article>
+                        ))}
+                        {!columnModules.length && <span className="empty-slot">拖到这里</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+                <form className="panel module-form" onSubmit={saveModule}>
+                  <h2><PlusCircle size={20} weight="duotone" />手动补充模块</h2>
+                  <input value={moduleDraft.title} onChange={(event) => setModuleDraft({ ...moduleDraft, title: event.target.value })} placeholder="知识点名称，比如 进程、线程、死锁" />
+                  <select aria-label="难度" value={moduleDraft.difficulty} onChange={(event) => setModuleDraft({ ...moduleDraft, difficulty: event.target.value as ModuleDifficulty })}>
+                    <option value="low">难度低</option>
+                    <option value="medium">难度中</option>
+                    <option value="high">难度高</option>
+                  </select>
+                  <button type="submit"><CheckCircle size={18} weight="bold" />加入计划</button>
+                </form>
+              </>
+            ) : (
+              <div className="daily-plan-list">
+                {dailyPlanGroups.length ? dailyPlanGroups.map((group) => {
+                  const isToday = group.date === todayKey;
+                  const isOverdue = group.date < todayKey;
+                  return (
+                    <div key={group.date} className={`daily-group${isToday ? " today" : ""}${isOverdue ? " overdue" : ""}`}>
+                      <div className="daily-group-head">
+                        <strong>{dateLabel(group.date)}</strong>
+                        <small>{group.items.length} 个模块 · 预计 {group.totalMinutes} 分钟</small>
+                      </div>
+                      <div className="daily-group-items">
+                        {group.items.map((item) => (
+                          <article key={item.id} className="daily-item" onClick={() => openModule(item)}>
+                            <div className="daily-item-main">
+                              <strong>{displayModuleTitle(item.title, item.note)}</strong>
+                              <div className="daily-item-meta">
+                                <span>{difficultyLabel(item.difficulty)}</span>
+                                {item.priority && <span>{priorityLabel(item.priority)}</span>}
+                              </div>
+                            </div>
+                            <span className={`module-status-dot ${moduleStatus(item)}`} />
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                }) : (
+                  <div className="panel">
+                    <p className="muted">还没有日计划。点击上方「生成每日计划」，AI 会自动按剩余天数分配模块。</p>
+                  </div>
                 )}
               </div>
-            </div>
-
-            <div className="kanban">
-              {moduleColumns.map((column) => {
-                const columnModules = visibleModules.filter((item) => moduleStatus(item) === column.status);
-                return (
-                  <div
-                    key={column.status}
-                    className="kanban-column"
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={() => moveModule(column.status)}
-                  >
-                    <div className="column-head">
-                      <strong>{column.title}</strong>
-                      <small>{column.hint}</small>
-                    </div>
-                    {columnModules.map((item) => (
-                      <article
-                        key={item.id}
-                        className="module-card"
-                        draggable
-                        onDragStart={() => setDraggingModuleId(item.id)}
-                        onDragOver={(event) => event.preventDefault()}
-                        onDrop={(event) => {
-                          event.stopPropagation();
-                          moveModule(column.status, item.id);
-                        }}
-                        onClick={() => openModule(item)}
-                      >
-                        <strong>{displayModuleTitle(item.title, item.note)}</strong>
-                        <div className="module-meta">
-                          <span>预计 {item.estimated_minutes} 分钟</span>
-                          <span>{difficultyLabel(item.difficulty)}</span>
-                        </div>
-                        {moduleStatus(item) !== "done" && <button className="mini" onClick={(event) => {
-                          event.stopPropagation();
-                          startModule(item);
-                        }}><Lightning size={15} weight="bold" />点击学习</button>}
-                      </article>
-                    ))}
-                    {!columnModules.length && <span className="empty-slot">拖到这里</span>}
-                  </div>
-                );
-              })}
-            </div>
-
-            <form className="panel module-form" onSubmit={saveModule}>
-              <h2><PlusCircle size={20} weight="duotone" />手动补充模块</h2>
-              <input value={moduleDraft.title} onChange={(event) => setModuleDraft({ ...moduleDraft, title: event.target.value })} placeholder="知识点名称，比如 进程、线程、死锁" />
-              <select aria-label="难度" value={moduleDraft.difficulty} onChange={(event) => setModuleDraft({ ...moduleDraft, difficulty: event.target.value as ModuleDifficulty })}>
-                <option value="low">难度低</option>
-                <option value="medium">难度中</option>
-                <option value="high">难度高</option>
-              </select>
-              <button type="submit"><CheckCircle size={18} weight="bold" />加入计划</button>
-            </form>
+            )}
 
           </section>
         )}
@@ -1736,7 +1580,7 @@ export default function App() {
                 <span className="heading-icon"><ClipboardText size={20} weight="duotone" /></span>
                 <div>
                   <h2>模拟考</h2>
-                  <p>生成一份手机上也能做完的小模考，考完再查漏。</p>
+                  <p>优先根据往年题/高频知识点预测试卷。</p>
                 </div>
               </div>
               <label>考试时长（分钟）
@@ -1834,7 +1678,6 @@ export default function App() {
                     <span className="kind-badge">知识点模块</span>
                     <h2>{displayModuleTitle(selectedModule.title, selectedModule.note)}</h2>
                     <div className="module-meta detail-meta">
-                      <span>预计 {selectedModule.estimated_minutes} 分钟</span>
                       <span>{difficultyLabel(selectedModule.difficulty)}</span>
                       <span>{priorityLabel(selectedModule.priority)}</span>
                       <span>重要排名第 {selectedModule.importance_rank || selectedModule.order || 1}</span>
@@ -1849,12 +1692,12 @@ export default function App() {
                     <h3>会考什么</h3>
                     <span>根据导入资料推测，优先考虑往年题</span>
                   </div>
-                  {renderHumanText(selectedModule.exam_points || selectedModule.note || "这个模块还没有考察内容说明，可以重新生成计划或手动补充。")}
+                  <RenderHumanText text={selectedModule.exam_points || selectedModule.note || "这个模块还没有考察内容说明，可以重新生成计划或手动补充。"} />
                 </div>
 
                 <div className="detail-block">
                   <h3>模块讲解</h3>
-                  {selectedModule.explanation ? renderHumanText(selectedModule.explanation) : <p className="muted">需要讲解时，在这里单独生成这个知识点的讲解。</p>}
+                  {selectedModule.explanation ? <RenderHumanText text={selectedModule.explanation} /> : <p className="muted">需要讲解时，在这里单独生成这个知识点的讲解。</p>}
                   {!selectedModule.explanation && (
                     <div className="actions wrap">
                       <button onClick={() => generateModuleExplanation(selectedModule)} disabled={busy}><Brain size={18} weight="bold" />生成讲解</button>
@@ -1862,9 +1705,115 @@ export default function App() {
                   )}
                 </div>
 
+                {/* Card Learning */}
+                {isStreamingCards ? (
+                  <div className="detail-block card-learning-area">
+                    <h3>正在生成学习卡片...</h3>
+                    <div className="card-progress-dots" style={{ marginBottom: "8px" }}>
+                      <span className="card-dot dot-current" /><span className="card-dot dot-current" /><span className="card-dot dot-current" />
+                    </div>
+                    {streamingCards.length > 0 ? (
+                      <div className="card-preview-strip">
+                        {streamingCards.map((c) => (<span key={c.id} className="card-preview-chip" title={c.front}>{c.type === "concept" ? "概" : c.type === "mistake" ? "错" : c.type === "exam" ? "考" : "背"} {c.front.slice(0, 12)}…</span>))}
+                      </div>
+                    ) : <p className="muted">AI 正在生成卡片，请稍候...</p>}
+                    <button className="secondary" onClick={cancelCardStreaming}><ArrowLeft size={16} weight="bold" />取消生成</button>
+                  </div>
+                ) : cardQueue.length > 0 ? (
+                  <div className="detail-block card-learning-area">
+                    <div className="card-round-badge">第 {cardLearningRound} 轮 · {currentCardIndex + 1}/{cardQueue.length}</div>
+                    <div className="card-progress-dots">
+                      {cardQueue.map((c, i) => (<span key={c.id} className={`card-dot ${i < currentCardIndex ? (cardProgress[c.id] === "mastered" ? "dot-mastered" : cardProgress[c.id] === "uncertain" ? "dot-uncertain" : "dot-unknown") : i === currentCardIndex ? "dot-current" : "dot-pending"}`} />))}
+                    </div>
+
+                    <p className="flip-hint" onClick={toggleCard}>点击翻转卡片</p>
+
+                    <div className="swipe-card-stage">
+                      <AnimatePresence initial={false}>
+                        {[-1, 0, 1].map((offset) => {
+                          const idx = currentCardIndex + offset;
+                          if (idx < 0 || idx >= cardQueue.length) return null;
+                          const card = cardQueue[idx];
+                          const isCenter = offset === 0;
+                          return (
+                            <motion.div
+                              key={card.id}
+                              className={`ios-card${isCenter && isCardFlipped ? " flipped" : ""}`}
+                              drag={isCenter ? "x" : false}
+                              dragSnapToOrigin
+                              dragElastic={0.15}
+                              onDragEnd={isCenter ? (_event, info) => {
+                                const vx = info.velocity.x;
+                                const ox = info.offset.x;
+                                if (ox < -50 || vx < -400) goToNextCard();
+                                else if (ox > 50 || vx > 400) goToPrevCard();
+                              } : undefined}
+                              onClick={isCenter ? toggleCard : () => setCurrentCardIndex(idx)}
+                              animate={{
+                                x: offset * 16,
+                                scale: isCenter ? 1 : 0.88,
+                                y: isCenter ? 0 : Math.abs(offset) * 10,
+                                opacity: isCenter ? 1 : 0.45,
+                                zIndex: isCenter ? 3 : 1,
+                                filter: isCenter ? "blur(0px)" : "blur(1px)",
+                              }}
+                              transition={{ type: "spring", stiffness: 330, damping: 28, mass: 0.7 }}
+                            >
+                              <div className="swipe-card-inner">
+                                <div className="swipe-card-face front">
+                                  <span className="card-type-badge">{card.type === "concept" ? "概念" : card.type === "mistake" ? "易错" : card.type === "exam" ? "考题" : "速背"}</span>
+                                  <p>{card.front}</p>
+                                </div>
+                                <div className="swipe-card-face back">
+                                  <p>{card.back.answer}</p>
+                                  {card.back.examAnswer && <p className="card-exam-answer">考试答法：{card.back.examAnswer}</p>}
+                                  {card.back.memoryTip && <p className="card-memory-tip">记忆提示：{card.back.memoryTip}</p>}
+                                </div>
+                              </div>
+                            </motion.div>
+                          );
+                        })}
+                      </AnimatePresence>
+                    </div>
+
+                    <p className="swipe-hint">← 左滑前一张 · 右滑下一张 →</p>
+
+                    <div className="card-feedback-buttons">
+                      <button className="mini feedback-unknown" onClick={() => submitCardFeedback("unknown")}>还不会</button>
+                      <button className="mini feedback-uncertain" onClick={() => submitCardFeedback("uncertain")}>有点模糊</button>
+                      <button className="mini feedback-mastered" onClick={() => submitCardFeedback("mastered")}><CheckCircle size={14} weight="bold" />我会了</button>
+                    </div>
+                    <button className="secondary" style={{ marginTop: "4px" }} onClick={exitCardLearning}><ArrowLeft size={16} weight="bold" />退出学习</button>
+                  </div>
+                ) : selectedModule.cards?.length ? (
+                  <div className="detail-block">
+                    <h3>学习卡片 · {selectedModule.cards.length} 张</h3>
+                    <div className="card-stack" onClick={() => startCardLearning(selectedModule)}>
+                      {selectedModule.cards.map((c, i) => (
+                        <div key={c.id} className="stacked-card" style={{ zIndex: selectedModule.cards!.length - i, transform: `translateY(${-i * 3}px) rotate(${(i - (selectedModule.cards!.length-1)/2) * 2}deg)` }}>
+                          <span className="card-type-badge">{c.type === "concept" ? "概念" : c.type === "mistake" ? "易错" : c.type === "exam" ? "考题" : "速背"}</span>
+                          <p>{c.front.slice(0, 30)}{c.front.length > 30 ? "…" : ""}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="muted" style={{ textAlign: "center" }}>点击卡堆开始抽卡学习</p>
+                    <div className="actions wrap">
+                      <button onClick={() => generateCards(selectedModule)} disabled={busy}><Sparkle size={18} weight="bold" />重新生成</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="detail-block">
+                    <h3>学习卡片</h3>
+                    <p className="muted">AI 会围绕这个知识点生成 4~6 张学习卡片，包含概念、易错、考题、速背四种类型。</p>
+                    <div className="actions wrap">
+                      <button onClick={() => generateCards(selectedModule)} disabled={busy}><Brain size={18} weight="bold" />生成学习卡片</button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="detail-block">
                   <h3>模块模拟题</h3>
-                  {selectedModule.practice_questions ? renderHumanText(selectedModule.practice_questions) : <p className="muted">学完这个知识点后，可以生成几道只围绕它的小题。</p>}
+                  {selectedModule.practice_questions ? <RenderHumanText text={selectedModule.practice_questions} /> : <p className="muted">学完这个知识点后，可以生成几道只围绕它的小题。</p>}
                   <div className="actions wrap">
                     <button onClick={() => generateModuleQuestions(selectedModule)} disabled={busy}>
                       <ClipboardText size={18} weight="bold" />{selectedModule.practice_questions ? "换一批模拟题" : "生成模块模拟题"}
@@ -1887,7 +1836,7 @@ export default function App() {
             <div className="panel plan-preview">
               <span className="kind-badge">AI 生成结果</span>
               <h2>{currentResultNote?.title || "AI 结果"}</h2>
-              {renderHumanText(currentResultNote?.content || "")}
+              <RenderHumanText text={currentResultNote?.content || ""} />
               <div className="actions wrap">
                 {currentResultNote?.mode === "plan" && <button onClick={() => createModulesFromPlan(currentResultNote)}><Kanban size={18} weight="bold" />确认，拆成模块卡片</button>}
                 {currentResultNote?.mode === "practice" && <button onClick={() => {
@@ -1958,7 +1907,6 @@ export default function App() {
                     <div className="memorize-card-main" onClick={() => setMemorizeModuleId(module.id)}>
                       <strong>{displayModuleTitle(module.title, module.note)}</strong>
                       <div className="module-meta">
-                        <span>{module.estimated_minutes} 分钟</span>
                         <span>{difficultyLabel(module.difficulty)}</span>
                         {module.memorization && <span className="kind-badge">已速背</span>}
                       </div>
@@ -1997,7 +1945,6 @@ export default function App() {
                 <h2 style={{ margin: 0 }}>{displayModuleTitle(module.title, module.note)}</h2>
               </div>
               <div className="module-meta">
-                <span>{module.estimated_minutes} 分钟</span>
                 <span>{difficultyLabel(module.difficulty)}</span>
                 <span>{priorityLabel(module.priority)}</span>
                 {module.importance_rank && <span>重要第 {module.importance_rank} 名</span>}
@@ -2006,13 +1953,13 @@ export default function App() {
 
             <div className="panel">
               <h3>考察内容</h3>
-              {module.exam_points ? renderHumanText(module.exam_points) : <p className="muted">暂无考察内容说明。</p>}
+              {module.exam_points ? <RenderHumanText text={module.exam_points} /> : <p className="muted">暂无考察内容说明。</p>}
             </div>
 
             <div className="panel">
               <h3>速背内容</h3>
               {module.memorization ? (
-                renderHumanText(module.memorization)
+                <RenderHumanText text={module.memorization} />
               ) : (
                 <div>
                   <p className="muted">还没有生成速背内容。AI 会根据这个知识点的考察内容，生成核心概念、必背要点、记忆口诀和易错提醒。</p>

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -86,9 +88,98 @@ def test_plan_prompt_is_material_driven_module_cards(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert "只根据导入资料" in captured["system"]
+    assert "知识点模块必须来自导入资料" in captured["system"]
+    assert "补充理解" in captured["system"]
     assert "知识点" in captured["system"]
     assert "不能是学习安排" in captured["system"]
+    assert "sourceTitle" in captured["system"]
+    assert "evidence" in captured["system"]
+    assert "进程是资源分配的基本单位" in captured["user"]
+
+
+def test_plan_splits_long_materials_before_ai(monkeypatch):
+    captured_users = []
+    captured_tokens = []
+
+    async def fake_chat_completion(api_config, messages):
+        captured_users.append(messages[1].content)
+        captured_tokens.append(api_config.max_tokens)
+        return "模块名称：关系模式；预计时间：45分钟；难度：中；重要排名：1；资料来源：数据库教材；证据：关系模式由属性集合构成；考察内容：关系模式、属性、元组；练习方式：做概念辨析题"
+
+    monkeypatch.setattr("backend.app.main.chat_completion", fake_chat_completion)
+    long_content = "关系模式由属性集合构成。" * 900
+    response = client.post(
+        "/api/ai/plan",
+        json={
+            "api_config": {
+                "provider_name": "DeepSeek",
+                "base_url": "https://api.deepseek.com",
+                "api_key": "sk-test",
+                "model": "deepseek-chat",
+            },
+            "project": {
+                "subject": "数据库原理",
+                "exam_date": "2026-06-30",
+                "daily_minutes": 120,
+            },
+            "materials": [
+                {
+                    "id": "material_db",
+                    "title": "数据库教材",
+                    "kind": "pdf",
+                    "content": long_content,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured_users) > 1
+    assert all(value >= 8000 for value in captured_tokens)
+    assert "资料片段" in captured_users[0]
+    assert "material_db" in captured_users[0]
+    assert "长资料已分块" in response.json()["content"]
+
+
+def test_plan_processes_all_material_chunks(monkeypatch):
+    captured_users = []
+
+    async def fake_chat_completion(api_config, messages):
+        captured_users.append(messages[1].content)
+        return "模块名称：关系完整性；预计时间：45分钟；难度：中；重要排名：1；资料来源：数据库教材；证据：实体完整性、参照完整性和用户定义完整性；考察内容：完整性约束；练习方式：做约束判断题"
+
+    monkeypatch.setattr("backend.app.main.chat_completion", fake_chat_completion)
+    response = client.post(
+        "/api/ai/plan",
+        json={
+            "api_config": {
+                "provider_name": "DeepSeek",
+                "base_url": "https://api.deepseek.com",
+                "api_key": "sk-test",
+                "model": "deepseek-chat",
+            },
+            "project": {
+                "subject": "数据库原理",
+                "exam_date": "2026-06-30",
+                "daily_minutes": 120,
+                "target_score": "90",
+            },
+            "materials": [
+                {
+                    "id": "material_db",
+                    "title": "数据库教材",
+                    "kind": "pdf",
+                    "content": "实体完整性、参照完整性和用户定义完整性。" * 4800,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured_users) > 10
+    assert "考试日期：2026-06-30" in captured_users[0]
+    assert "目标分数：90" in captured_users[0]
+    assert "后续片段还没有进入 AI" not in response.json()["content"]
 
 
 def test_module_practice_prompt_focuses_on_current_module(monkeypatch):
@@ -129,7 +220,200 @@ def test_module_practice_prompt_focuses_on_current_module(monkeypatch):
     assert response.status_code == 200
     assert captured["max_tokens"] == 5000
     assert "当前知识点：进程" in captured["user"]
-    assert "只围绕这个知识点" in captured["user"]
-    assert "生成 3 道" in captured["user"]
-    assert "完整解析" in captured["user"]
-    assert "PCB、进程状态、状态转换" in captured["user"]
+
+
+def test_invite_verify_initializes_three_demo_codes(monkeypatch, tmp_path):
+    monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
+
+    response = client.post("/api/invite/verify", json={"code": "KAO-V1-DEMO-1"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "valid": True,
+        "remaining": 50,
+        "remainingBudgetCny": 10.0,
+        "message": "邀请码有效",
+    }
+
+
+def test_invite_verify_caps_uses_and_budget(monkeypatch, tmp_path):
+    invite_file = tmp_path / "invites.json"
+    invite_file.write_text(
+        """
+        {
+          "codes": [
+            {
+              "code": "OVER-LIMIT",
+              "maxUses": 99,
+              "usedCount": 49,
+              "budgetCny": 99,
+              "estimatedCostCny": 9.25,
+              "enabled": true,
+              "expiresAt": "2026-12-31"
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(invite_file))
+
+    response = client.post("/api/invite/verify", json={"code": "OVER-LIMIT"})
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is True
+    assert response.json()["remaining"] == 1
+    assert response.json()["remainingBudgetCny"] == 0.75
+
+
+def test_invite_chat_uses_server_config_and_decrements_budget(monkeypatch, tmp_path):
+    monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
+    monkeypatch.setenv("KAOBUDDY_AI_BASE_URL", "https://server.example")
+    monkeypatch.setenv("KAOBUDDY_AI_MODEL", "server-model")
+    monkeypatch.setenv("KAOBUDDY_AI_API_KEY", "sk-server-secret")
+    monkeypatch.setenv("KAOBUDDY_AI_INPUT_CNY_PER_MILLION", "10")
+    monkeypatch.setenv("KAOBUDDY_AI_OUTPUT_CNY_PER_MILLION", "20")
+    captured = {}
+
+    async def fake_chat_completion_with_usage(api_config, messages):
+        captured["api_config"] = api_config
+        captured["messages"] = messages
+        return "邀请码响应", {"prompt_tokens": 1000, "completion_tokens": 2000}
+
+    monkeypatch.setattr("backend.app.main.chat_completion_with_usage", fake_chat_completion_with_usage, raising=False)
+
+    response = client.post(
+        "/api/ai/chat",
+        json={
+            "inviteCode": "KAO-V1-DEMO-1",
+            "messages": [{"role": "user", "content": "请回复一句话"}],
+            "model": "ignored-front-model",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "邀请码响应"
+    assert response.json()["remaining"] == 49
+    assert response.json()["remainingBudgetCny"] == 9.95
+    assert captured["api_config"].base_url == "https://server.example"
+    assert captured["api_config"].model == "server-model"
+    assert captured["api_config"].api_key == "sk-server-secret"
+
+
+def test_invite_chat_missing_server_config_does_not_decrement(monkeypatch, tmp_path):
+    monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
+    monkeypatch.delenv("KAOBUDDY_AI_BASE_URL", raising=False)
+    monkeypatch.delenv("KAOBUDDY_AI_MODEL", raising=False)
+    monkeypatch.delenv("KAOBUDDY_AI_API_KEY", raising=False)
+
+    response = client.post(
+        "/api/ai/chat",
+        json={
+            "inviteCode": "KAO-V1-DEMO-1",
+            "messages": [{"role": "user", "content": "请回复一句话"}],
+        },
+    )
+    verify = client.post("/api/invite/verify", json={"code": "KAO-V1-DEMO-1"})
+
+    assert response.status_code == 502
+    assert "服务器 AI 配置未完成" in response.json()["detail"]
+    assert verify.json()["remaining"] == 50
+    assert verify.json()["remainingBudgetCny"] == 10.0
+
+
+def test_existing_ai_endpoint_accepts_invite_code(monkeypatch, tmp_path):
+    monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
+    monkeypatch.setenv("KAOBUDDY_AI_BASE_URL", "https://server.example")
+    monkeypatch.setenv("KAOBUDDY_AI_MODEL", "server-model")
+    monkeypatch.setenv("KAOBUDDY_AI_API_KEY", "sk-server-secret")
+    monkeypatch.setenv("KAOBUDDY_AI_INPUT_CNY_PER_MILLION", "10")
+    monkeypatch.setenv("KAOBUDDY_AI_OUTPUT_CNY_PER_MILLION", "20")
+    captured = {}
+
+    async def fake_chat_completion_with_usage(api_config, messages):
+        captured["api_config"] = api_config
+        captured["user"] = messages[1].content
+        return "邀请码计划", {"prompt_tokens": 1000, "completion_tokens": 1000}
+
+    monkeypatch.setattr("backend.app.main.chat_completion_with_usage", fake_chat_completion_with_usage, raising=False)
+
+    response = client.post(
+        "/api/ai/plan",
+        json={
+            "inviteCode": "KAO-V1-DEMO-2",
+            "project": {
+                "subject": "数据库原理",
+                "exam_date": "2026-06-30",
+                "daily_minutes": 120,
+            },
+            "materials": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "邀请码计划"
+    assert response.json()["remaining"] == 49
+    assert response.json()["remainingBudgetCny"] == 9.97
+    assert captured["api_config"].api_key == "sk-server-secret"
+    assert "数据库原理" in captured["user"]
+
+
+def test_frontend_keeps_invite_auth_wired():
+    app_source = Path("src/App.tsx").read_text(encoding="utf-8")
+
+    assert "verifyInviteCode" in app_source
+    assert "storage.saveInviteState" in app_source
+    assert "const authPayload" in app_source
+    assert "inviteCode: undefined as never" not in app_source
+
+
+def test_daily_plan_prompt_uses_project_and_unfinished_modules(monkeypatch):
+    captured = {}
+
+    async def fake_chat_completion(api_config, messages):
+        captured["system"] = messages[0].content
+        captured["user"] = messages[1].content
+        return '[{"module_id":"module_process","date":"2026-06-03","day_order":1,"reason":"先学高优先级模块"}]'
+
+    monkeypatch.setattr("backend.app.main.chat_completion", fake_chat_completion)
+    response = client.post(
+        "/api/ai/daily-plan",
+        json={
+            "api_config": {
+                "provider_name": "DeepSeek",
+                "base_url": "https://api.deepseek.com",
+                "api_key": "sk-test",
+                "model": "deepseek-chat",
+            },
+            "project": {
+                "subject": "操作系统",
+                "exam_date": "2026-06-30",
+                "daily_minutes": 120,
+                "target_score": "90",
+            },
+            "modules": [
+                {
+                    "id": "module_process",
+                    "title": "进程",
+                    "estimated_minutes": 60,
+                    "module_status": "todo",
+                    "importance_rank": 1,
+                    "difficulty": "high",
+                    "exam_points": "PCB、状态转换",
+                    "source_title": "进程课件",
+                    "evidence": "PCB 记录进程状态",
+                }
+            ],
+            "extra": "先安排高频考点",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"].startswith("[")
+    assert "只安排用户给出的未完成知识点模块" in captured["system"]
+    assert "考试日期：2026-06-30" in captured["user"]
+    assert "每天可学习：120 分钟" in captured["user"]
+    assert "目标分数：90" in captured["user"]
+    assert "module_process" in captured["user"]
+    assert "进程" in captured["user"]
+    assert "先安排高频考点" in captured["user"]

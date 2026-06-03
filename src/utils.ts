@@ -1,0 +1,713 @@
+import type { CardType, LearnCard, MaterialKind, StudyMaterial, StudyProject, StudyTask } from "./types";
+
+// ---------------------------------------------------------------------------
+// Dates & time helpers
+// ---------------------------------------------------------------------------
+
+export function nowIso() {
+  return new Date().toISOString();
+}
+
+export function dateKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+export function daysLeft(date: string) {
+  if (!date) return "-";
+  const target = new Date(`${date}T23:59:59`);
+  return Math.max(0, Math.ceil((target.getTime() - Date.now()) / 86400000));
+}
+
+export function dateLabel(date: string) {
+  const today = dateKey();
+  const tomorrow = dateKey(new Date(Date.now() + 86400000));
+  if (date === today) return "今天";
+  if (date === tomorrow) return "明天";
+  return new Date(`${date}T00:00:00`).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+}
+
+export function normalizeMinutes(value: number) {
+  if (!Number.isFinite(value)) return 30;
+  return Math.max(10, Math.min(480, Math.round(value)));
+}
+
+// ---------------------------------------------------------------------------
+// Module status helpers
+// ---------------------------------------------------------------------------
+
+export type ModuleStatus = "todo" | "doing" | "done";
+export type ModulePriority = "low" | "medium" | "high";
+export type ModuleDifficulty = "low" | "medium" | "high";
+
+export function moduleStatus(task: StudyTask): ModuleStatus {
+  if (task.module_status) return task.module_status;
+  return task.status === "done" ? "done" : "todo";
+}
+
+export function taskOrder(task: StudyTask, fallback: number) {
+  return typeof task.order === "number" ? task.order : fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Material helpers
+// ---------------------------------------------------------------------------
+
+export function materialKindLabel(material: StudyMaterial) {
+  const labels: Record<MaterialKind, string> = {
+    pdf: "PDF 课件 · 文字和页面识别",
+    document: "Word / DOC 资料",
+    markdown: "Markdown 笔记",
+    text: "手动文本",
+    file: "文本文件",
+    handwriting: "手写笔记",
+    video: "视频字幕"
+  };
+  return labels[material.kind] || material.kind;
+}
+
+// ---------------------------------------------------------------------------
+// Text cleaning
+// ---------------------------------------------------------------------------
+
+export function stripMarkdown(text: string) {
+  return text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```/g, ""))
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/(\*\*|__)(.*?)\1/g, "$2")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^\s{0,3}>\s?/gm, "")
+    .replace(/^\s*[-—–_]{3,}\s*$/gm, "")
+    .replace(/^\s*[-*]\s+/gm, "• ")
+    .replace(/[*_~#]+/g, "")
+    .trim();
+}
+
+export function isDividerLine(text: string) {
+  return /^[-—–_]{3,}$/.test(text.trim());
+}
+
+export function tableCells(line: string) {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "").trim();
+  return trimmed.includes("|")
+    ? trimmed.split("|").map((cell) => cell.trim()).filter(Boolean)
+    : trimmed.split(/\s+/).map((cell) => cell.trim()).filter(Boolean);
+}
+
+export function isTableSeparator(line: string) {
+  const cells = tableCells(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+export function parseTableBlock(lines: string[]) {
+  const separatorIndex = lines.findIndex(isTableSeparator);
+  if (separatorIndex <= 0) return null;
+  const headers = tableCells(lines[separatorIndex - 1]);
+  if (headers.length < 2) return null;
+  const rows = lines
+    .slice(separatorIndex + 1)
+    .map(tableCells)
+    .filter((cells) => cells.length === headers.length);
+  return rows.length ? { headers, rows } : null;
+}
+
+export function previewText(text: string, max = 220) {
+  return stripMarkdown(text).replace(/\n{3,}/g, "\n\n").slice(0, max);
+}
+
+export function compactTitle(raw: string, fallback: string) {
+  const cleaned = stripMarkdown(raw)
+    .replace(/^(模块|知识点|名称|标题)\s*[:：]?\s*/i, "")
+    .replace(/优先级\s*[:：]?\s*[高中低]/g, "")
+    .replace(/预计(学习)?时间\s*[:：]?\s*\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
+    .trim();
+  const firstPart = cleaned.split(/[：:。；;，,\n（(]/)[0]?.trim();
+  const title = (firstPart || cleaned || fallback).replace(/\s+/g, " ");
+  return title.length > 18 ? `${title.slice(0, 18)}...` : title;
+}
+
+// ---------------------------------------------------------------------------
+// JSON extraction
+// ---------------------------------------------------------------------------
+
+export function getJsonArrayTexts(text: string) {
+  const cleaned = stripMarkdown(text);
+  const arrays: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < cleaned.length; index += 1) {
+    const char = cleaned[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "[") {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (char === "]" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        arrays.push(cleaned.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+  return arrays;
+}
+
+export function jsonModulesToHumanText(text: string) {
+  const jsonTexts = getJsonArrayTexts(text);
+  if (!jsonTexts.length) return "";
+  try {
+    const data = jsonTexts.flatMap((jsonText) => {
+      const parsed = JSON.parse(jsonText);
+      return Array.isArray(parsed) ? parsed : [];
+    });
+    if (!data.length) return "";
+    const modules = data
+      .map((item) => {
+        if (!item || typeof item !== "object") return "";
+        const record = item as Record<string, unknown>;
+        const title = String(record.title || record.name || record.module || record.moduleName || "").trim();
+        if (!title) return "";
+        const minutes = record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes;
+        const priority = String(record.priority || "").trim();
+        const note = String(record.note || record.reason || record.description || record.practice || "").trim();
+        const sourceTitle = String(record.sourceTitle || record.source_title || record.source || record.material || "").trim();
+        const evidence = String(record.evidence || record.quote || record.sourceEvidence || record.source_evidence || "").trim();
+        return [
+          `模块：${title}`,
+          minutes ? `预计时间：${minutes} 分钟` : "",
+          priority ? `优先级：${priority}` : "",
+          sourceTitle ? `资料来源：${sourceTitle}` : "",
+          evidence ? `证据：${evidence}` : "",
+          note ? `说明：${note}` : ""
+        ].filter(Boolean).join("\n");
+      })
+      .filter(Boolean);
+    return modules.join("\n\n");
+  } catch {
+    return "";
+  }
+}
+
+export function humanReadableAiText(text: string) {
+  return jsonModulesToHumanText(text) || stripMarkdown(text);
+}
+
+// ---------------------------------------------------------------------------
+// Difficulty / Priority helpers
+// ---------------------------------------------------------------------------
+
+export function parsePriority(line: string): ModulePriority {
+  if (/high/i.test(line)) return "high";
+  if (/low/i.test(line)) return "low";
+  if (/重要排名\s*[:：]?\s*[1-3]\b|高|重要|核心|优先/.test(line)) return "high";
+  if (/低|选学|有空/.test(line)) return "low";
+  return "medium";
+}
+
+export function parseDifficulty(text: string): ModuleDifficulty {
+  const cleaned = stripMarkdown(text);
+  const match = cleaned.match(/难度\s*[:：]\s*(低|中|高|简单|一般|困难)/);
+  const value = match?.[1] || cleaned;
+  if (/high/i.test(value)) return "high";
+  if (/low/i.test(value)) return "low";
+  if (/高|困难|难/.test(value)) return "high";
+  if (/低|简单|易/.test(value)) return "low";
+  return "medium";
+}
+
+export function difficultyLabel(value?: ModuleDifficulty) {
+  if (value === "high") return "难度高";
+  if (value === "low") return "难度低";
+  return "难度中";
+}
+
+export function priorityLabel(value?: ModulePriority) {
+  if (value === "high") return "高重要";
+  if (value === "low") return "低重要";
+  return "中重要";
+}
+
+// ---------------------------------------------------------------------------
+// Field extraction
+// ---------------------------------------------------------------------------
+
+export function extractNumber(text: string, patterns: RegExp[]) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const value = Number(match[1]);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return undefined;
+}
+
+export function extractField(text: string, names: string[]) {
+  const label = names.join("|");
+  const pattern = new RegExp(`(?:${label})\\s*[:：]\\s*([^；;\\n]+)`);
+  return stripMarkdown(text.match(pattern)?.[1] || "").trim();
+}
+
+export function extractExamPoints(text: string) {
+  return extractField(text, ["考察内容", "考查内容", "考点内容", "考试内容", "会考什么", "重点"]);
+}
+
+// ---------------------------------------------------------------------------
+// Module title extraction
+// ---------------------------------------------------------------------------
+
+const knowledgeTerms = [
+  "操作系统引论",
+  "进程同步",
+  "进程通信",
+  "进程调度",
+  "处理器调度",
+  "线程",
+  "进程",
+  "互斥",
+  "信号量",
+  "管程",
+  "死锁",
+  "内存管理",
+  "虚拟存储",
+  "页面置换",
+  "分页",
+  "分段",
+  "文件目录",
+  "文件管理",
+  "磁盘调度",
+  "磁盘存储",
+  "设备管理",
+  "输入输出",
+  "I/O"
+];
+
+export function extractModuleTitle(line: string) {
+  const cleaned = stripMarkdown(line)
+    .replace(/预计(学习)?时间\s*[:：]?\s*\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
+    .replace(/预计完成时间\s*[:：]?\s*\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
+    .replace(/难度\s*[:：]\s*(低|中|高|简单|一般|困难)/g, "")
+    .replace(/重要(程度)?排名\s*[:：]?\s*\d+/g, "")
+    .replace(/\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
+    .replace(/^(第\s*\d+\s*(天|章|页)\s*)+/g, "")
+    .trim();
+  const explicit = cleaned.match(/(?:模块名称|知识点名称|模块名|知识点|考点|主题)\s*[:：]\s*([^，。；;\n｜|]+?)(?:\s+预计|$|[，。；;\n｜|])/i);
+  const pipeFirst = cleaned.split(/[｜|]/)[0]?.trim();
+  const candidate = (explicit?.[1] || pipeFirst || cleaned)
+    .replace(/^(模块|知识点|考点)\s*\d*\s*[:：]?\s*/i, "")
+    .replace(/^(名称|标题)\s*[:：]?\s*/i, "")
+    .replace(/\s+/g, "");
+  const term = knowledgeTerms.find((item) => cleaned.includes(item));
+  if (!candidate) return term || "";
+  if (candidate.length < 2 || candidate.length > 16) return term || "";
+  if (/第\s*\d+\s*(天|章|页)|每天|天数|高频|聚焦|高效|综合|复习|练习|任务|计划|安排|资料|时间|完成|根据|模块$/.test(candidate)) return term || "";
+  return candidate;
+}
+
+export function isGenericModuleText(text: string) {
+  const cleaned = stripMarkdown(text).replace(/\s+/g, "");
+  return /第\d+天|每日任务|天数|全真模拟|模拟测试|模拟卷|模考|错题回顾|串联|综合复习|复习计划|练习安排|学习安排|高效利用时间|聚焦高频|高频考点|补充要求|建议通读|选择题相关模块/.test(cleaned);
+}
+
+export function isGenericModuleTitle(title: string) {
+  const cleaned = stripMarkdown(title).replace(/\s+/g, "");
+  return !cleaned || /^(好的|关于时间|知识点|模块|计划|任务|复习|练习)$/.test(cleaned) || isGenericModuleText(cleaned);
+}
+
+export function displayModuleTitle(title: string, note?: string) {
+  const cleaned = stripMarkdown(title).replace(/\s+/g, "");
+  const extracted = extractModuleTitle(cleaned) || extractModuleTitle(note || "");
+  return extracted || compactTitle(cleaned, "知识点");
+}
+
+export function isStudyModule(item: StudyTask) {
+  const title = displayModuleTitle(item.title, item.note || item.exam_points);
+  if (!title || title === "知识点") return false;
+  return !isGenericModuleTitle(title) && !isGenericModuleTitle(item.title);
+}
+
+export function moduleKey(module: StudyTask) {
+  return displayModuleTitle(module.title, module.note).replace(/\s+/g, "");
+}
+
+export function textIncludesMaterialPoint(text: string, value?: string) {
+  const needle = stripMarkdown(value || "").replace(/\s+/g, "");
+  if (!needle || needle.length < 2) return false;
+  return stripMarkdown(text).replace(/\s+/g, "").includes(needle);
+}
+
+export function moduleOnlyBelongsToMaterial(module: StudyTask, deleted: StudyMaterial, remaining: StudyMaterial[]) {
+  const sourceMatchesDeleted =
+    module.source_material_id === deleted.id ||
+    stripMarkdown(module.source_title || "").trim() === deleted.title.trim();
+  if (!sourceMatchesDeleted) return false;
+  const title = displayModuleTitle(module.title, module.note);
+  return !remaining.some((material) =>
+    textIncludesMaterialPoint(material.content, title) ||
+    textIncludesMaterialPoint(material.content, module.evidence)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Project payload
+// ---------------------------------------------------------------------------
+
+export function toProjectPayload(project: StudyProject) {
+  return {
+    subject: project.subject,
+    exam_date: project.exam_date,
+    daily_minutes: project.daily_minutes,
+    target_score: project.target_score,
+    weak_points: project.weak_points
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Parse AI plan output → StudyTask[]
+// ---------------------------------------------------------------------------
+
+type DailyPlanItem = {
+  module_id: string;
+  date: string;
+  day_order: number;
+  reason?: string;
+};
+
+export function parseModulesFromPlan(content: string, projectId: string, noteId: string, existingCount: number, makeId: () => string): StudyTask[] {
+  const jsonTexts = getJsonArrayTexts(content);
+  if (jsonTexts.length) {
+    try {
+      const data = jsonTexts.flatMap((jsonText) => {
+        const parsed = JSON.parse(jsonText);
+        return Array.isArray(parsed) ? parsed : [];
+      });
+      const seen = new Set<string>();
+      return data.flatMap((item, index) => {
+        if (!item || typeof item !== "object") return [];
+        const record = item as Record<string, unknown>;
+        const rawTitle = String(record.title || record.name || record.module || record.moduleName || "");
+        const note = String(record.note || record.reason || record.description || record.practice || "");
+        const examPoints = String(record.exam_points || record.examPoints || record.points || record.content || record.test_points || note || "");
+        const sourceMaterialId = String(record.sourceMaterialId || record.source_material_id || record.materialId || record.material_id || "");
+        const sourceTitle = String(record.sourceTitle || record.source_title || record.source || record.material || "");
+        const sourceSection = String(record.sourceSection || record.source_section || record.section || record.page || "");
+        const evidence = String(record.evidence || record.quote || record.sourceEvidence || record.source_evidence || "");
+        const title = extractModuleTitle(rawTitle) || extractModuleTitle(note) || extractModuleTitle(examPoints);
+        if (!title || isGenericModuleTitle(title) || isGenericModuleTitle(rawTitle)) return [];
+        if (!title || seen.has(title)) return [];
+        seen.add(title);
+        const rawMinutes = Number(record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes);
+        const rawRank = Number(record.importance_rank ?? record.importanceRank ?? record.rank);
+        const line = humanReadableAiText(JSON.stringify([record]));
+        return [{
+          id: makeId(),
+          project_id: projectId,
+          title,
+          date: dateKey(),
+          estimated_minutes: Number.isFinite(rawMinutes) ? normalizeMinutes(rawMinutes) : 45,
+          status: "todo",
+          module_status: "todo",
+          priority: parsePriority(String(record.priority || "")),
+          difficulty: parseDifficulty(String(record.difficulty || record.level || "")),
+          importance_rank: Number.isFinite(rawRank) ? rawRank : existingCount + index + 1,
+          exam_points: stripMarkdown(examPoints),
+          order: existingCount + index,
+          source_note_id: noteId,
+          source_material_id: stripMarkdown(sourceMaterialId),
+          source_title: stripMarkdown(sourceTitle),
+          source_section: stripMarkdown(sourceSection),
+          evidence: stripMarkdown(evidence),
+          note: line || note || rawTitle,
+          created_at: nowIso(),
+          updated_at: nowIso()
+        }] as StudyTask[];
+      });
+    } catch {
+      // Fall back to line parsing below.
+    }
+  }
+  const blockText = stripMarkdown(content);
+  const moduleBlocks = blockText
+    .split(/(?=模块\s*[:：])/)
+    .map((block) => block.trim())
+    .filter((block) => /^模块\s*[:：]/.test(block));
+  if (moduleBlocks.length) {
+    const seen = new Set<string>();
+    return moduleBlocks.flatMap((block, index) => {
+      const title = extractModuleTitle(block);
+      if (!title || seen.has(title) || isGenericModuleTitle(title)) return [];
+      seen.add(title);
+      const minutesMatch = block.match(/(?:预计(?:完成|学习)?时间|预计时间)\s*[:：]?\s*(\d+)\s*(分钟|min)/i);
+      const hourMatch = block.match(/(\d+(?:\.\d+)?)\s*(小时|h)/i);
+      const estimatedMinutes = minutesMatch
+        ? normalizeMinutes(Number(minutesMatch[1]))
+        : hourMatch
+          ? normalizeMinutes(Number(hourMatch[1]) * 60)
+          : 45;
+      const rank = extractNumber(block, [/重要(?:程度)?排名\s*[:：]?\s*(\d+)/, /排名\s*[:：]?\s*(\d+)/]);
+      const examPoints = extractField(block, ["说明", "考察内容", "考查内容", "考点内容", "考试内容", "会考什么", "重点"]);
+      const sourceTitle = extractField(block, ["资料来源", "来源资料", "来源", "sourceTitle"]);
+      const sourceSection = extractField(block, ["资料位置", "来源位置", "章节", "页码", "sourceSection"]);
+      const evidence = extractField(block, ["证据", "资料证据", "原文依据", "evidence"]);
+      return [{
+        id: makeId(),
+        project_id: projectId,
+        title,
+        date: dateKey(),
+        estimated_minutes: estimatedMinutes,
+        status: "todo",
+        module_status: "todo",
+        priority: parsePriority(block),
+        difficulty: parseDifficulty(block),
+        importance_rank: rank || existingCount + index + 1,
+        exam_points: examPoints,
+        order: existingCount + index,
+        source_note_id: noteId,
+        source_title: sourceTitle,
+        source_section: sourceSection,
+        evidence,
+        note: block,
+        created_at: nowIso(),
+        updated_at: nowIso()
+      }] as StudyTask[];
+    });
+  }
+
+  const rawLines = content
+    .split(/\n+/)
+    .map((line) => stripMarkdown(line).replace(/^[\s\-*•\d.、)]+/, "").trim())
+    .filter((line) => line.length >= 2);
+  const candidateLines = rawLines
+    .filter((line) => /模块名称|知识点名称|模块名|知识点|考点|主题|预计|分钟|小时/.test(line))
+    .slice(0, 36);
+  const lines = candidateLines.length ? candidateLines : rawLines.slice(0, 24);
+  const seen = new Set<string>();
+  return lines.flatMap((line, index) => {
+    const title = extractModuleTitle(line);
+    if (!title || seen.has(title) || isGenericModuleTitle(title) || isGenericModuleText(line)) return [];
+    seen.add(title);
+    const minutesMatch = line.match(/(?:预计(?:完成|学习)?时间\s*[:：]?\s*)?(\d+)\s*(分钟|min)/i);
+    const hourMatch = line.match(/(\d+(?:\.\d+)?)\s*(小时|h)/i);
+    const estimatedMinutes = minutesMatch
+      ? normalizeMinutes(Number(minutesMatch[1]))
+      : hourMatch
+        ? normalizeMinutes(Number(hourMatch[1]) * 60)
+        : 45;
+    const rank = extractNumber(line, [/重要(?:程度)?排名\s*[:：]?\s*(\d+)/, /排名\s*[:：]?\s*(\d+)/]);
+    const examPoints = extractExamPoints(line);
+    const sourceTitle = extractField(line, ["资料来源", "来源资料", "来源", "sourceTitle"]);
+    const sourceSection = extractField(line, ["资料位置", "来源位置", "章节", "页码", "sourceSection"]);
+    const evidence = extractField(line, ["证据", "资料证据", "原文依据", "evidence"]);
+    return [{
+      id: makeId(),
+      project_id: projectId,
+      title,
+      date: dateKey(),
+      estimated_minutes: estimatedMinutes,
+      status: "todo",
+      module_status: "todo",
+      priority: parsePriority(line),
+      difficulty: parseDifficulty(line),
+      importance_rank: rank || existingCount + index + 1,
+      exam_points: examPoints,
+      order: existingCount + index,
+      source_note_id: noteId,
+      source_title: sourceTitle,
+      source_section: sourceSection,
+      evidence,
+      note: line,
+      created_at: nowIso(),
+      updated_at: nowIso()
+    }] as StudyTask[];
+  });
+}
+
+export function parseDailyPlan(content: string): DailyPlanItem[] {
+  // Try multiple strategies to extract JSON
+  let jsonText = "";
+
+  // Strategy 1: direct JSON array extraction
+  const arrays = getJsonArrayTexts(content);
+  if (arrays.length) jsonText = arrays[0];
+
+  // Strategy 2: strip code fences and try again
+  if (!jsonText) {
+    const noFence = content.replace(/```json\s*/gi, "").replace(/```\s*/g, "");
+    const arrays2 = getJsonArrayTexts(noFence);
+    if (arrays2.length) jsonText = arrays2[0];
+  }
+
+  if (!jsonText) return [];
+  try {
+    const data = JSON.parse(jsonText);
+    if (!Array.isArray(data)) return [];
+    return data.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const record = item as Record<string, unknown>;
+      const moduleId = String(record.module_id || record.moduleId || record.id || "");
+      const rawDate = String(record.date || "");
+      // Normalize date: accept YYYY-MM-DD, YYYY/MM/DD, ISO timestamps
+      let date = rawDate.trim();
+      const isoMatch = date.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      const slashMatch = date.match(/^(\d{4})\/(\d{2})\/(\d{2})/);
+      if (isoMatch) {
+        date = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+      } else if (slashMatch) {
+        date = `${slashMatch[1]}-${slashMatch[2]}-${slashMatch[3]}`;
+      }
+      if (!moduleId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return [];
+      const dayOrder = Number(record.day_order ?? record.dayOrder ?? record.order ?? 0);
+      return [{
+        module_id: moduleId,
+        date,
+        day_order: Number.isFinite(dayOrder) && dayOrder > 0 ? dayOrder : 1,
+        reason: stripMarkdown(String(record.reason || ""))
+      }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module source context builder
+// ---------------------------------------------------------------------------
+
+export function moduleSourceContext(module: StudyTask) {
+  return [
+    module.source_title ? `资料来源：${module.source_title}` : "",
+    module.source_section ? `资料位置：${module.source_section}` : "",
+    module.evidence ? `资料证据：${module.evidence}` : "",
+    "知识点和考察重点要优先基于上面的资料证据；可以适当补充背景帮助理解，但请标注为“补充理解”，不要把补充内容说成资料原文。"
+  ].filter(Boolean).join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Status tone
+// ---------------------------------------------------------------------------
+
+export function statusTone(message: string) {
+  if (/失败|错误|没|先|不能|要填|不足|无响应|失败|异常/.test(message)) return "danger";
+  if (/已|完成|成功|保存|加入|导入|生成|记录/.test(message)) return "success";
+  return "neutral";
+}
+
+// ---------------------------------------------------------------------------
+// Practice question parsing
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Card parsing from AI response
+// ---------------------------------------------------------------------------
+
+const VALID_CARD_TYPES: CardType[] = ["concept", "mistake", "exam", "quick_memory"];
+
+export function parseCardsFromAi(content: string): LearnCard[] {
+  const jsonTexts = getJsonArrayTexts(content);
+  if (!jsonTexts.length) return [];
+  try {
+    const data = jsonTexts.flatMap((jsonText) => {
+      const parsed = JSON.parse(jsonText);
+      return Array.isArray(parsed) ? parsed : [];
+    });
+    return data.flatMap((item, index) => {
+      if (!item || typeof item !== "object") return [];
+      const record = item as Record<string, unknown>;
+      const type = String(record.type || "concept").trim();
+      if (!VALID_CARD_TYPES.includes(type as CardType)) return [];
+      const front = stripMarkdown(String(record.front || "").trim());
+      if (!front || front.length < 2) return [];
+      const backObj = record.back;
+      const back = typeof backObj === "object" && backObj !== null
+        ? {
+            answer: stripMarkdown(String((backObj as Record<string, unknown>).answer || "").trim()),
+            examAnswer: stripMarkdown(String((backObj as Record<string, unknown>).examAnswer || "").trim()) || undefined,
+            memoryTip: stripMarkdown(String((backObj as Record<string, unknown>).memoryTip || "").trim()) || undefined,
+          }
+        : { answer: stripMarkdown(String(record.answer || record.back || "").trim()) };
+      if (!back.answer) return [];
+      const importance = typeof record.importance === "number" && record.importance >= 1 && record.importance <= 5
+        ? record.importance : 3;
+      return [{
+        id: `card-${index}-${Date.now()}`,
+        type: type as CardType,
+        front,
+        back,
+        importance,
+      }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+
+export function parsePracticeQuestions(text: string): string[] {
+  const cleaned = stripMarkdown(text);
+  const questions: string[] = [];
+  const parts = cleaned.split(/(?=(?:^|\n)\d+\s*[.、）)])/);
+  parts.forEach((part) => {
+    const trimmed = part.trim();
+    if (trimmed && /^\d/.test(trimmed)) {
+      questions.push(trimmed);
+    }
+  });
+  return questions.length >= 2 ? questions : [cleaned];
+}
+
+export function parseMockQuestions(content: string): { questions: string[]; answerKey: string } {
+  const sections = content.split("【题目解析】");
+  const examPart = sections[0] || content;
+  const answerPart = sections.length > 1 ? "【题目解析】" + sections.slice(1).join("【题目解析】") : "";
+  const questions: string[] = [];
+  const lines = examPart.split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^\d+[.、）]/.test(trimmed) && !trimmed.match(/^[一二三四五六七八九十]、/)) {
+      questions.push(trimmed);
+    }
+  }
+	  return { questions, answerKey: answerPart };
+}
+
+export function extractMistakesFromGrading(gradingText: string): string[] {
+  const lines = gradingText.split(/\n/);
+  const mistakes: string[] = [];
+  let currentQ = "";
+  for (const line of lines) {
+    if (/^第?\s*\d+\s*[.、题]|^题目|\n\d+[.、)]/.test(line)) {
+      if (currentQ && /[✗×错]|误|不对|扣分|不正确/.test(currentQ)) {
+        mistakes.push(currentQ.replace(/\s+/g, " ").trim().slice(0, 200));
+      }
+      currentQ = line;
+    } else {
+      currentQ += " " + line;
+    }
+  }
+  if (currentQ && /[✗×错]|误|不对|扣分|不正确/.test(currentQ)) {
+    mistakes.push(currentQ.replace(/\s+/g, " ").trim().slice(0, 200));
+  }
+  return mistakes.slice(0, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Status tone
+// ---------------------------------------------------------------------------
+

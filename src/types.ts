@@ -1,5 +1,22 @@
 export type MaterialKind = "text" | "file" | "handwriting" | "video" | "pdf" | "markdown" | "document";
 
+// ---- Learning Cards ----
+export type CardType = "concept" | "mistake" | "exam" | "quick_memory";
+
+export type LearnCard = {
+  id: string;
+  type: CardType;
+  front: string;
+  back: {
+    answer: string;
+    examAnswer?: string;
+    memoryTip?: string;
+  };
+  importance?: number;
+};
+
+export type CardProgress = "mastered" | "uncertain" | "unknown";
+
 export type ProviderPreset = {
   provider_name: string;
   base_url: string;
@@ -10,6 +27,16 @@ export type ApiConfig = ProviderPreset & {
   api_key: string;
   temperature: number;
   max_tokens: number;
+};
+
+export type AiMode = "invite" | "custom";
+
+export type InviteState = {
+  inviteCode: string;
+  remaining: number;
+  remainingBudgetCny: number;
+  validatedAt: string;
+  aiMode: AiMode;
 };
 
 export type StudyProject = {
@@ -58,11 +85,16 @@ export type StudyTask = {
   importance_rank?: number;
   exam_points?: string;
   explanation?: string;
+  cards?: LearnCard[];
   practice_questions?: string;
   memorization?: string;
   completed_at?: string;
   order?: number;
   source_note_id?: string;
+  source_material_id?: string;
+  source_title?: string;
+  source_section?: string;
+  evidence?: string;
   note?: string;
   created_at: string;
   updated_at: string;
@@ -79,6 +111,8 @@ export type Mistake = {
   created_at: string;
   updated_at: string;
 };
+
+export type MistakeFilter = "all" | "new" | "reviewed";
 
 export type WeakPoint = {
   id: string;

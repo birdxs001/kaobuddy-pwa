@@ -1,8 +1,9 @@
-import type { AiNote, ApiConfig, AppExport, Mistake, MockAttempt, StudyMaterial, StudyProject, StudyTask, WeakPoint } from "./types";
+import type { AiNote, ApiConfig, AppExport, InviteState, Mistake, MockAttempt, StudyMaterial, StudyProject, StudyTask, WeakPoint } from "./types";
 
 const DB_NAME = "kaobuddy-db";
 const DB_VERSION = 2;
 const API_CONFIG_KEY = "kaobuddy-api-config";
+const INVITE_STATE_KEY = "kaobuddy-invite-state";
 
 type StoreName = "projects" | "materials" | "notes" | "tasks" | "mistakes" | "weak_points" | "mock_attempts";
 
@@ -121,10 +122,15 @@ export const storage = {
   saveMaterial: (material: StudyMaterial) => put("materials", material),
   deleteMaterial: (id: string) => deleteById("materials", id),
   saveNote: (note: AiNote) => put("notes", note),
+  deleteNote: (id: string) => deleteById("notes", id),
   saveTask: (task: StudyTask) => put("tasks", task),
+  deleteTask: (id: string) => deleteById("tasks", id),
   saveMistake: (mistake: Mistake) => put("mistakes", mistake),
+  deleteMistake: (id: string) => deleteById("mistakes", id),
   saveWeakPoint: (weakPoint: WeakPoint) => put("weak_points", weakPoint),
+  deleteWeakPoint: (id: string) => deleteById("weak_points", id),
   saveMockAttempt: (attempt: MockAttempt) => put("mock_attempts", attempt),
+  deleteMockAttempt: (id: string) => deleteById("mock_attempts", id),
   saveApiConfig: (config: ApiConfig) => localStorage.setItem(API_CONFIG_KEY, JSON.stringify(config)),
   getApiConfig: (): ApiConfig | null => {
     const raw = localStorage.getItem(API_CONFIG_KEY);
@@ -133,6 +139,23 @@ export const storage = {
       return JSON.parse(raw) as ApiConfig;
     } catch {
       return null;
+    }
+  },
+  saveInviteState: (state: InviteState) => localStorage.setItem(INVITE_STATE_KEY, JSON.stringify(state)),
+  getInviteState: (): InviteState => {
+    const fallback: InviteState = {
+      inviteCode: "",
+      remaining: 0,
+      remainingBudgetCny: 0,
+      validatedAt: "",
+      aiMode: "custom",
+    };
+    const raw = localStorage.getItem(INVITE_STATE_KEY);
+    if (!raw) return fallback;
+    try {
+      return { ...fallback, ...(JSON.parse(raw) as Partial<InviteState>) };
+    } catch {
+      return fallback;
     }
   },
   exportAll: async (): Promise<AppExport> => ({
