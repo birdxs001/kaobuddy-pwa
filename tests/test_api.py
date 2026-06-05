@@ -363,7 +363,8 @@ def test_frontend_keeps_invite_auth_wired():
 
     assert "verifyInviteCode" in app_source
     assert "storage.saveInviteState" in app_source
-    assert "const authPayload" in app_source
+    assert "function getAuthPayload" in app_source
+    assert "...getAuthPayload()" in app_source
     assert "inviteCode: undefined as never" not in app_source
 
 

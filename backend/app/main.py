@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import json,os
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -62,9 +62,15 @@ PUBLIC_DIR = ROOT_DIR / "public"
 
 app = FastAPI(title="KaoBuddy API", version="1.0.0")
 
+_raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173"
+)
+allowed_origins = [origin.strip() for origin in _raw_origins.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -276,6 +282,9 @@ async def _run_daily_plan(request: DailyPlanRequest) -> AiResponse:
 
     user_content = (
         f"今天 {today.isoformat()}，考试 {exam_date.isoformat()}，共 {len(total_dates)} 天。\n"
+        f"考试日期：{exam_date.isoformat()}\n"
+        f"每天可学习：{request.project.daily_minutes} 分钟\n"
+        f"目标分数：{request.project.target_score or '未填写'}\n"
         f"每天最多 {request.project.daily_minutes} 分钟，所有模块共 {total_module_minutes} 分钟。\n\n"
         f"请把下面 {len(request.modules)} 个模块分配到 {total_dates[0]} ~ {total_dates[-1]} 的每一天：\n"
         f"{_format_daily_plan_modules(request)}\n\n"
@@ -501,3 +510,11 @@ async def import_video(request: VideoImportRequest) -> VideoImportResponse:
         return await import_video_metadata(str(request.url))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"视频信息读取失败：{exc}") from exc
+
+
+# SPA fallback — return index.html for any unmatched client-side path.
+# Must be registered last so it does not shadow API routes or static mounts.
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str) -> FileResponse:
+    dist_index = DIST_DIR / "index.html"
+    return FileResponse(dist_index if dist_index.exists() else STATIC_DIR / "index.html")

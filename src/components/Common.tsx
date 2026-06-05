@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { CheckCircle, Lightning, Sparkle, X } from "@phosphor-icons/react";
-import { humanReadableAiText, isDividerLine, parseTableBlock } from "../utils";
+import { humanReadableAiText, isDividerLine, parseTableBlock, readingTextBlocks } from "../utils";
 
 // ---------------------------------------------------------------------------
 // BrandMark
@@ -60,23 +60,42 @@ export function StatusToast({ className, message, onCancel }: { className: strin
 // renderHumanText — renders AI output as structured JSX
 // ---------------------------------------------------------------------------
 
-export function RenderHumanText({ text }: { text: string }) {
-  const blocks = humanReadableAiText(text)
-    .split(/\n{2,}/)
-    .map((block) =>
-      block
-        .split(/\n/)
-        .map((line) => line.trim())
-        .filter((line) => line && !isDividerLine(line))
-        .join("\n")
-        .trim()
-    )
-    .filter(Boolean);
+function proseBlockMeta(block: string) {
+  const match = block.match(/^([^：:]{2,10})[：:]\s*([\s\S]*)$/);
+  const label = match?.[1]?.trim() || "";
+  const body = match?.[2]?.trim() || block;
+  if (!/^(结论|零基础解释|高频考点|例题|易错点|易错提醒|核心概念|必背要点|常见考法|考试答法|参考答案|解析)$/.test(label)) {
+    return { label: "", body: block, tone: "" };
+  }
+  const tone = /例题|解析|参考答案|考试答法/.test(label)
+    ? "example"
+    : /结论|核心概念/.test(label)
+      ? "summary"
+      : /易错/.test(label)
+        ? "warning"
+        : "focus";
+  return { label, body, tone };
+}
 
+export function RenderHumanText({ text, variant = "default" }: { text: string; variant?: "default" | "reading" }) {
+  const isReading = variant === "reading";
+  const blocks = isReading
+    ? readingTextBlocks(text)
+    : humanReadableAiText(text)
+      .split(/\n{2,}/)
+      .map((block) =>
+        block
+          .split(/\n/)
+          .map((line) => line.trim())
+          .filter((line) => line && !isDividerLine(line))
+          .join("\n")
+          .trim()
+      )
+      .filter(Boolean);
   if (!blocks.length) return <p className="muted">暂无内容。</p>;
 
   return (
-    <div className="ai-text">
+    <div className={isReading ? "ai-text reading-text" : "ai-text"}>
       {blocks.map((block, index) => {
         const lines = block
           .split(/\n/)
@@ -115,6 +134,15 @@ export function RenderHumanText({ text }: { text: string }) {
                 <li key={line}>{line.replace(/^•\s*/, "")}</li>
               ))}
             </ul>
+          );
+        }
+        if (isReading) {
+          const meta = proseBlockMeta(block);
+          return (
+            <p key={index} className={`ai-prose-card ${meta.tone}`}>
+              {meta.label && <span className="ai-prose-label">{meta.label}</span>}
+              {meta.body}
+            </p>
           );
         }
         return <p key={index}>{block}</p>;

@@ -23,10 +23,10 @@ import {
   displayModuleTitle, extractModuleTitle, gradePerQuestion, humanReadableAiText,
   isStudyModule,
   materialKindLabel, moduleKey, moduleOnlyBelongsToMaterial,
-  moduleSourceContext, moduleStatus, normalizeMinutes, nowIso,
-  parseCardsFromAi, parseDailyPlan, parseDifficulty, parseMockQuestions,
+  learningButtonAction, moduleImportanceBucket, moduleImportanceLabel, moduleSourceContext, moduleStatus, normalizeMinutes, nowIso,
+  buildBalancedDailyPlan, dailyPlanDates, parseCardsFromAi, parseDailyPlan, parseDifficulty, parseMockQuestions,
   parseModulesFromPlan, parsePracticeQuestions, parsePriority,
-  priorityLabel, statusTone, stripMarkdown, taskOrder, toProjectPayload,
+  statusTone, stripMarkdown, taskOrder, toProjectPayload,
   type ModuleStatus
 } from "./utils";
 
@@ -252,6 +252,9 @@ export default function App() {
   );
   const dailyPlanGroups = useMemo(() => {
     const groups = new Map<string, StudyTask[]>();
+    const yesterdayKey = dateKey(new Date(new Date(`${todayKey}T00:00:00`).getTime() - 86400000));
+    const visibleDates = activeProject ? [yesterdayKey, ...dailyPlanDates(activeProject, todayKey)] : [yesterdayKey, todayKey];
+    visibleDates.forEach((date) => groups.set(date, []));
     visibleModules.filter((item) => moduleStatus(item) !== "done").forEach((item) => {
       const date = item.date || todayKey;
       groups.set(date, [...(groups.get(date) || []), item]);
@@ -261,9 +264,13 @@ export default function App() {
       .map(([date, items]) => ({
         date,
         items: items.sort((a, b) => taskOrder(a, 0) - taskOrder(b, 0)),
-        totalMinutes: items.reduce((sum, item) => sum + item.estimated_minutes, 0)
+        importanceCounts: items.reduce((counts, item) => {
+          const bucket = moduleImportanceBucket(item, visibleModules);
+          counts[bucket] += 1;
+          return counts;
+        }, { high: 0, medium: 0, low: 0 })
       }));
-  }, [visibleModules, todayKey]);
+  }, [activeProject, visibleModules, todayKey]);
   const selectedModule = selectedModuleId
     ? scopedModules.find((item) => item.id === selectedModuleId) || null
     : null;
@@ -280,11 +287,18 @@ export default function App() {
     .map((q, i) => ({ index: i, question: q, verdict: mockQuestionVerdicts[i] || "unknown" as const }));
   const statusMessage = busy ? busyLabel : status;
   const statusClass = `status ${busy ? "loading" : statusTone(statusMessage)}`;
-  const authPayload = useMemo<AiAuthPayload>(() => (
-    inviteState.aiMode === "invite"
-      ? { inviteCode: inviteState.inviteCode.trim() }
-      : { api_config: apiConfig }
-  ), [apiConfig, inviteState.aiMode, inviteState.inviteCode]);
+  function latestInviteState() {
+    const stored = storage.getInviteState();
+    if (stored.aiMode === "invite" && isInviteReady(stored)) return stored;
+    return inviteState;
+  }
+
+  function getAuthPayload(): AiAuthPayload {
+    const currentInviteState = latestInviteState();
+    return currentInviteState.aiMode === "invite"
+      ? { inviteCode: currentInviteState.inviteCode.trim() }
+      : { api_config: apiConfig };
+  }
 
   function projectProgress(projectId: string) {
     const projectModules = tasks.filter((task) => task.project_id === projectId && isStudyModule(task));
@@ -306,12 +320,14 @@ export default function App() {
   }
 
   function requireAi() {
-    if (inviteState.aiMode === "invite") {
-      if (!inviteState.inviteCode.trim()) {
+    const currentInviteState = latestInviteState();
+    if (currentInviteState.aiMode === "invite") {
+      if (currentInviteState !== inviteState) setInviteState(currentInviteState);
+      if (!currentInviteState.inviteCode.trim()) {
         setStatus("先填邀请码，再让 AI 干活。");
         return false;
       }
-      if (!isInviteReady(inviteState)) {
+      if (!isInviteReady(currentInviteState)) {
         setStatus("先验证邀请码，再让 AI 干活。");
         return false;
       }
@@ -333,7 +349,7 @@ export default function App() {
       const result = await verifyInviteCode(code);
       const nextState = applyInviteVerification(inviteState, code, result, nowIso());
       saveInviteState(nextState);
-      setStatus(result.valid ? result.message : result.message);
+      setStatus(result.valid ? "邀请码验证成功，AI 已连接。" : result.message);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "邀请码验证失败。");
     } finally {
@@ -363,7 +379,7 @@ export default function App() {
     event?.preventDefault();
     storage.saveApiConfig(apiConfig);
     saveInviteState({ ...inviteState, aiMode: "custom" });
-    setStatus("API 配置已保存在当前浏览器。");
+    setStatus("API 配置成功，已保存在当前浏览器。");
   }
 
   async function testApi() {
@@ -373,7 +389,7 @@ export default function App() {
       const result = await testApiConfig(apiConfig);
       storage.saveApiConfig(apiConfig);
       saveInviteState({ ...inviteState, aiMode: "custom" });
-      setStatus(`连接测试完成：${result}`);
+      setStatus("API 连接成功，配置已完成。");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "连接测试失败。");
     } finally {
@@ -394,7 +410,7 @@ export default function App() {
     }
     if (setupStep === "api") {
       if (!requireAi()) return;
-      if (inviteState.aiMode === "custom") storage.saveApiConfig(apiConfig);
+      if (latestInviteState().aiMode === "custom") storage.saveApiConfig(apiConfig);
       setSetupStep("project");
       setStatus("AI 连接方式已保存，现在创建第一个考试项目。");
     }
@@ -547,7 +563,7 @@ export default function App() {
       const imageFiles = selected.filter((file) => !file.name.toLowerCase().endsWith(".pdf"));
       const pdfText = (await Promise.all(pdfFiles.map(readPdfText))).join("\n\n");
       const imageDataUrls = await Promise.all(imageFiles.map(readAsDataUrl));
-      const recognized = imageDataUrls.length ? await recognizeHandwriting(authPayload, imageDataUrls, handwritingHint) : null;
+      const recognized = imageDataUrls.length ? await recognizeHandwriting(getAuthPayload(), imageDataUrls, handwritingHint) : null;
       await storage.saveMaterial({
         id: createId("material"),
         project_id: activeProject!.id,
@@ -608,7 +624,7 @@ export default function App() {
     setGenerationAbort(abort);
     try {
       const result = await runAi(mode, {
-        ...authPayload,
+        ...getAuthPayload(),
         project: toProjectPayload(activeProject!),
         materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
         extra: extraOverride ?? extra
@@ -684,7 +700,7 @@ export default function App() {
     setGenerationAbort(abort);
     try {
       const result = await runDailyPlan({
-        ...authPayload,
+        ...getAuthPayload(),
         project: toProjectPayload(activeProject!),
         modules: unfinished.map((item) => ({
           id: item.id,
@@ -699,9 +715,9 @@ export default function App() {
         })),
         extra
       }, abort.signal);
-      const planItems = parseDailyPlan(result.content);
-      if (!planItems.length) return setStatus("AI 没返回可用的日计划，可以再生成一次。");
+      const parsedPlanItems = parseDailyPlan(result.content);
       const moduleMap = new Map(unfinished.map((item) => [item.id, item]));
+      const planItems = buildBalancedDailyPlan(unfinished, activeProject!, todayKey, parsedPlanItems);
       const sorted = planItems
         .filter((item) => moduleMap.has(item.module_id))
         .sort((a, b) => a.date.localeCompare(b.date) || a.day_order - b.day_order);
@@ -709,9 +725,8 @@ export default function App() {
         const mod = moduleMap.get(planItem.module_id)!;
         return storage.saveTask({ ...mod, date: planItem.date, order: index, updated_at: nowIso() });
       }));
-      const missing = unfinished.length - new Set(sorted.map((item) => item.module_id)).size;
       setPlanMode("daily");
-      setStatus(missing > 0 ? `每日计划已生成，${missing} 个模块暂时未被安排。` : "每日计划已生成。");
+      setStatus(parsedPlanItems.length ? "每日计划已生成，并按考试日期重新均衡了每天任务。" : "AI 没返回可用日计划，已按考试日期自动排好。");
       await refresh();
     } catch (error) {
       if ((error as Error).name === "AbortError") { /* cancelGeneration() already sets status */ }
@@ -856,7 +871,7 @@ export default function App() {
     try {
       const moduleTitle = displayModuleTitle(module.title, module.note);
       const result = await runModulePractice({
-        ...authPayload,
+        ...getAuthPayload(),
         project: toProjectPayload(activeProject!),
         materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
         extra,
@@ -886,7 +901,7 @@ export default function App() {
     setBusyLabel(`正在生成「${moduleTitle}」的讲解...`);
     try {
       const result = await runAi("teach", {
-        ...authPayload,
+        ...getAuthPayload(),
         project: toProjectPayload(activeProject!),
         materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
         extra: [
@@ -926,7 +941,7 @@ export default function App() {
     let fullText = "";
     try {
       fullText = await runCardsStream({
-        ...authPayload,
+        ...getAuthPayload(),
         project: toProjectPayload(activeProject!),
         materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
         extra: [extra, `当前知识点：${moduleTitle}`, `考察内容：${module.exam_points || module.note || "请根据资料判断。"}`, moduleSourceContext(module)].filter(Boolean).join("\n")
@@ -1013,7 +1028,7 @@ export default function App() {
     setBusyLabel(`正在生成「${moduleTitle}」的速背内容...`);
     try {
       const result = await runMemorize({
-        ...authPayload,
+        ...getAuthPayload(),
         project: toProjectPayload(activeProject!),
         materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
         extra: [
@@ -1058,6 +1073,23 @@ export default function App() {
     setMockExamState(mock.feedback ? "scored" : "taking");
   }
 
+  function openMockRecord(mock: MockAttempt, note?: AiNote) {
+    if (!note) {
+      setStatus("找不到这份模拟考的试卷内容。");
+      return;
+    }
+    if (mock.test_mode === "answer") {
+      openMockForTaking(mock, note);
+      return;
+    }
+    setActiveMockAttempt(mock);
+    setResultNote(note);
+    setMockUserAnswers({});
+    setMockScoringResult(null);
+    setSelectedMockMistakes([]);
+    setMockExamState("scored");
+  }
+
   async function submitMockAnswers() {
     if (!requireProject() || !requireAi()) return;
     if (!activeMockAttempt?.source_note_id) return setStatus("先选择一份模拟考。");
@@ -1079,7 +1111,7 @@ export default function App() {
     setBusyLabel("AI 正在批改模拟考...");
     try {
       const result = await gradeMock({
-        ...authPayload,
+        ...getAuthPayload(),
         project: toProjectPayload(activeProject!),
         materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
         exam_content: mockNote.content,
@@ -1528,7 +1560,7 @@ export default function App() {
                         <strong>{displayModuleTitle(item.title, item.note)}</strong>
                         <div className="today-row-meta">
                           <span>{difficultyLabel(item.difficulty)}</span>
-                          {item.priority && <span>{priorityLabel(item.priority)}</span>}
+                          <span>{moduleImportanceLabel(item, visibleModules)}</span>
                         </div>
                       </div>
                       <span className={`module-status-dot ${moduleStatus(item)}`} />
@@ -1659,7 +1691,7 @@ export default function App() {
                           <article key={item.id} className="module-card" draggable onDragStart={() => setDraggingModuleId(item.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); moveModule(column.status, item.id); }} onClick={() => openModule(item)}>
                             <strong>{displayModuleTitle(item.title, item.note)}</strong>
                             <div className="module-meta"><span>{difficultyLabel(item.difficulty)}</span></div>
-                            {moduleStatus(item) !== "done" && <button className="mini" onClick={(event) => { event.stopPropagation(); startModule(item); }}><Lightning size={15} weight="bold" />点击学习</button>}
+                            {moduleStatus(item) !== "done" && <button className="mini" onClick={(event) => { event.stopPropagation(); learningButtonAction(item) === "open" ? openModule(item) : startModule(item); }}><Lightning size={15} weight="bold" />点击学习</button>}
                           </article>
                         ))}
                         {!columnModules.length && <span className="empty-slot">拖到这里</span>}
@@ -1677,21 +1709,28 @@ export default function App() {
                     <div key={group.date} className={`daily-group${isToday ? " today" : ""}${isOverdue ? " overdue" : ""}`}>
                       <div className="daily-group-head">
                         <strong>{dateLabel(group.date)}</strong>
-                        <small>{group.items.length} 个模块 · 预计 {group.totalMinutes} 分钟</small>
+                        <small>
+                          {group.items.length} 个模块 ·
+                          高 {group.importanceCounts.high} / 中 {group.importanceCounts.medium} / 低 {group.importanceCounts.low}
+                        </small>
                       </div>
                       <div className="daily-group-items">
-                        {group.items.map((item) => (
+                        {group.items.length ? group.items.map((item) => (
                           <article key={item.id} className="daily-item" onClick={() => openModule(item)}>
                             <div className="daily-item-main">
                               <strong>{displayModuleTitle(item.title, item.note)}</strong>
                               <div className="daily-item-meta">
                                 <span>{difficultyLabel(item.difficulty)}</span>
-                                {item.priority && <span>{priorityLabel(item.priority)}</span>}
+                                <span>{moduleImportanceLabel(item, visibleModules)}</span>
                               </div>
                             </div>
                             <span className={`module-status-dot ${moduleStatus(item)}`} />
                           </article>
-                        ))}
+                        )) : (
+                          <div className="daily-day-empty">
+                            <span>{isOverdue ? "昨天没有留下未完成模块。" : "这天还没有安排模块。"}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -1759,8 +1798,26 @@ export default function App() {
                   {scopedMocks.map((item) => {
                     const mockNote = scopedNotes.find((note) => note.id === item.source_note_id);
                     const isEditing = editingMockId === item.id;
+                    const isSelected = activeMockAttempt?.id === item.id;
                     return (
-                      <div key={item.id} className="item mock-record">
+                      <div
+                        key={item.id}
+                        className={`item mock-record ${isSelected ? "selected" : ""}`}
+                        role="button"
+                        tabIndex={isEditing ? -1 : 0}
+                        aria-pressed={isSelected}
+                        onClick={() => {
+                          if (isEditing) return;
+                          openMockRecord(item, mockNote);
+                        }}
+                        onKeyDown={(event) => {
+                          if (isEditing) return;
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openMockRecord(item, mockNote);
+                          }
+                        }}
+                      >
                         <div className="mock-record-head">
                           {isEditing ? (
                             <input
@@ -1791,19 +1848,7 @@ export default function App() {
                             </strong>
                           )}
                         </div>
-                        <div className="mock-record-body" onClick={() => {
-                          if (!mockNote || isEditing) return;
-                          if (item.test_mode === "answer") {
-                            openMockForTaking(item, mockNote);
-                          } else {
-                            // 答案速览：inline preview with questions + answer key
-                            setActiveMockAttempt(item);
-                            setMockUserAnswers({});
-                            setMockScoringResult(null);
-                            setSelectedMockMistakes([]);
-                            setMockExamState("scored");
-                          }
-                        }}>
+                        <div className="mock-record-body">
                           <small>
                             <span className={`kind-badge ${item.test_mode === "answer" ? "" : "muted"}`}>{item.test_mode === "answer" ? "AI答题" : "答案速览"}</span>
                             {" "}{item.duration_minutes} 分钟 · {new Date(item.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
@@ -1820,21 +1865,62 @@ export default function App() {
 
             {activeMockAttempt && mockExamState !== "list" && activeMockNote && (
               <div className="panel mock-taking">
+                {(() => {
+                  const isAnswerPreview = mockExamState === "scored" && !mockScoringResult && !activeMockAttempt.feedback;
+                  return (
+                    <>
                 <div className="result-head">
                   <div>
                     <span className="kind-badge">{mockExamState === "scored" ? (mockScoringResult ? "已批改" : "答案速览") : "答题中"}</span>
                     <h2>{activeMockAttempt.title}</h2>
                     <p className="muted">{mockExamState === "scored" ? (mockScoringResult ? "下面是批改结果和参考解析，可以把错题放进查漏补缺。" : "题目和参考答案一起看，快速过一遍。") : "参考答案先藏起来，写完后交给 AI 批改。"}</p>
                   </div>
-                  <button className="secondary" onClick={() => {
-                    setActiveMockAttempt(null);
-                    setMockExamState("list");
-                    setMockScoringResult(null);
-                    setSelectedMockMistakes([]);
-                  }}><ArrowLeft size={18} weight="bold" />收起</button>
+                  <div className="actions wrap">
+                    <button onClick={async () => {
+                      setBusyLabel("正在生成 PDF...");
+                      try {
+                        await exportMockExamPdf(activeMockNote.content, activeMockAttempt.title);
+                        setStatus("PDF 已下载。");
+                      } catch (error) {
+                        setStatus(error instanceof Error ? error.message : "PDF 生成失败。");
+                      } finally {
+                        setBusyLabel("");
+                      }
+                    }} disabled={busy}><DownloadSimple size={18} weight="bold" />下载 PDF</button>
+                    <button className="secondary" onClick={() => {
+                      setActiveMockAttempt(null);
+                      setMockExamState("list");
+                      setMockScoringResult(null);
+                      setSelectedMockMistakes([]);
+                    }}><ArrowLeft size={18} weight="bold" />收起</button>
+                  </div>
                 </div>
 
-                {activeMockPaper.questions.length ? activeMockPaper.questions.map((q, index) => (
+                {isAnswerPreview ? (
+                  <div className="mock-preview-grid">
+                    <div className="mock-preview-section">
+                      <h3>试题速览</h3>
+                      {activeMockPaper.questions.length ? activeMockPaper.questions.map((q, index) => (
+                        <article key={`${activeMockAttempt.id}-preview-${index}`} className="mock-preview-question">
+                          <strong>{q.question}</strong>
+                          {q.options?.length ? (
+                            <div className="mock-preview-options">
+                              {q.options.map((opt) => <span key={opt}>{opt}</span>)}
+                            </div>
+                          ) : null}
+                        </article>
+                      )) : (
+                        <RenderHumanText text={activeMockNote.content} />
+                      )}
+                    </div>
+                    {activeMockPaper.answerKey && (
+                      <div className="mock-answer-key">
+                        <h3>参考答案与解析</h3>
+                        <RenderHumanText text={activeMockPaper.answerKey} />
+                      </div>
+                    )}
+                  </div>
+                ) : activeMockPaper.questions.length ? activeMockPaper.questions.map((q, index) => (
                   <div className="mock-question-block" key={`${activeMockAttempt.id}-${index}`}>
                     <strong>{q.question}</strong>
                     {q.type === "choice" && q.options ? (
@@ -1888,7 +1974,6 @@ export default function App() {
                     {!!mockMistakeCandidates.length && (
                       <div className="mock-mistake-picker">
                         <h3>选择要放进错题本的题</h3>
-                        <p className="muted">已自动勾选未全对的题目，可自行增减。</p>
                         {mockMistakeCandidates.map((candidate) => (
                           <label key={candidate.index} className="mock-mistake-option">
                             <input
@@ -1901,15 +1986,16 @@ export default function App() {
                               }}
                             />
                             <span>
-                              <span className={`kind-badge ${
-                                candidate.verdict === "wrong" ? "danger" :
-                                candidate.verdict === "partial" ? "warn" :
-                                candidate.verdict === "correct" ? "success" : ""
-                              }`}>
-                                {candidate.verdict === "wrong" ? "错误" :
-                                 candidate.verdict === "partial" ? "部分正确" :
-                                 candidate.verdict === "correct" ? "全对" : "未判定"}
-                              </span>
+                              {candidate.verdict !== "unknown" && (
+                                <span className={`kind-badge ${
+                                  candidate.verdict === "wrong" ? "danger" :
+                                  candidate.verdict === "partial" ? "warn" :
+                                  candidate.verdict === "correct" ? "success" : ""
+                                }`}>
+                                  {candidate.verdict === "wrong" ? "错误" :
+                                   candidate.verdict === "partial" ? "部分正确" : "全对"}
+                                </span>
+                              )}
                               {" "}{candidate.question.question}
                             </span>
                           </label>
@@ -1933,6 +2019,9 @@ export default function App() {
                     </div>
                   </>
                 )}
+                    </>
+                  );
+                })()}
               </div>
             )}
           </section>
@@ -2050,8 +2139,7 @@ export default function App() {
                     <h2>{displayModuleTitle(selectedModule.title, selectedModule.note)}</h2>
                     <div className="module-meta detail-meta">
                       <span>{difficultyLabel(selectedModule.difficulty)}</span>
-                      <span>{priorityLabel(selectedModule.priority)}</span>
-                      <span>重要排名第 {selectedModule.importance_rank || selectedModule.order || 1}</span>
+                      <span>{moduleImportanceLabel(selectedModule, visibleModules)}</span>
                       <span>{moduleStatus(selectedModule) === "done" ? "已学习" : moduleStatus(selectedModule) === "doing" ? "学习中" : "待学习"}</span>
                     </div>
                   </div>
@@ -2066,9 +2154,12 @@ export default function App() {
                   <RenderHumanText text={selectedModule.exam_points || selectedModule.note || "这个模块还没有考察内容说明，可以重新生成计划或手动补充。"} />
                 </div>
 
-                <div className="detail-block">
-                  <h3>模块讲解</h3>
-                  {selectedModule.explanation ? <RenderHumanText text={selectedModule.explanation} /> : <p className="muted">需要讲解时，在这里单独生成这个知识点的讲解。</p>}
+                <div className="detail-block explanation-block">
+                  <div className="detail-title">
+                    <h3>模块讲解</h3>
+                    <span>按结论、考点和例题分块阅读</span>
+                  </div>
+                  {selectedModule.explanation ? <RenderHumanText text={selectedModule.explanation} variant="reading" /> : <p className="muted">需要讲解时，在这里单独生成这个知识点的讲解。</p>}
                   {!selectedModule.explanation && (
                     <div className="actions wrap">
                       <button onClick={() => generateModuleExplanation(selectedModule)} disabled={busy}><Brain size={18} weight="bold" />生成讲解</button>
@@ -2314,11 +2405,10 @@ export default function App() {
                 <button className="secondary" onClick={() => setMemorizeModuleId("")}><ArrowLeft size={18} weight="bold" />返回列表</button>
                 <h2 style={{ margin: 0 }}>{displayModuleTitle(module.title, module.note)}</h2>
               </div>
-              <div className="module-meta">
-                <span>{difficultyLabel(module.difficulty)}</span>
-                <span>{priorityLabel(module.priority)}</span>
-                {module.importance_rank && <span>重要第 {module.importance_rank} 名</span>}
-              </div>
+                <div className="module-meta">
+                  <span>{difficultyLabel(module.difficulty)}</span>
+                  <span>{moduleImportanceLabel(module, visibleModules)}</span>
+                </div>
             </div>
 
             <div className="panel">

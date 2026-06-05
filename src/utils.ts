@@ -9,7 +9,10 @@ export function nowIso() {
 }
 
 export function dateKey(date = new Date()) {
-  return date.toISOString().slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export function daysLeft(date: string) {
@@ -21,8 +24,10 @@ export function daysLeft(date: string) {
 export function dateLabel(date: string) {
   const today = dateKey();
   const tomorrow = dateKey(new Date(Date.now() + 86400000));
+  const yesterday = dateKey(new Date(Date.now() - 86400000));
   if (date === today) return "今天";
   if (date === tomorrow) return "明天";
+  if (date === yesterday) return "昨天";
   return new Date(`${date}T00:00:00`).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
 
@@ -60,6 +65,10 @@ export type ModuleDifficulty = "low" | "medium" | "high";
 export function moduleStatus(task: StudyTask): ModuleStatus {
   if (task.module_status) return task.module_status;
   return task.status === "done" ? "done" : "todo";
+}
+
+export function learningButtonAction(task: StudyTask): "start" | "open" {
+  return moduleStatus(task) === "doing" ? "open" : "start";
 }
 
 export function taskOrder(task: StudyTask, fallback: number) {
@@ -227,6 +236,70 @@ export function humanReadableAiText(text: string) {
   return jsonModulesToHumanText(text) || stripMarkdown(text);
 }
 
+const READING_SECTION_TITLE_PATTERN = "结论|零基础解释|高频考点|例题|易错点|易错提醒|核心概念|必背要点|常见考法|考试答法|参考答案|解析|常考方式";
+const READING_SECTION_TITLES = new RegExp(`^(${READING_SECTION_TITLE_PATTERN})$`);
+const INLINE_READING_SECTION = new RegExp(`(?:^|[\\n。！？.!?]\\s*)(${READING_SECTION_TITLE_PATTERN})\\s*[：:]\\s*`, "g");
+
+export function mergeReadingBlocks(blocks: string[]) {
+  const merged: string[] = [];
+  for (let index = 0; index < blocks.length; index += 1) {
+    const current = blocks[index].trim();
+    const next = blocks[index + 1]?.trim();
+    if (READING_SECTION_TITLES.test(current) && next && !READING_SECTION_TITLES.test(next)) {
+      merged.push(`${current}：${next}`);
+      index += 1;
+    } else {
+      merged.push(current);
+    }
+  }
+  return merged;
+}
+
+function splitInlineReadingSections(block: string) {
+  const matches = Array.from(block.matchAll(INLINE_READING_SECTION));
+  if (!matches.length) return [block];
+
+  const sections = matches.map((match) => {
+    const fullMatch = match[0];
+    const title = match[1];
+    const titleOffset = fullMatch.indexOf(title);
+    const colonOffset = fullMatch.slice(titleOffset).search(/[：:]/);
+    const titleStart = match.index! + titleOffset;
+    const bodyStart = titleStart + colonOffset + 1;
+    return { title, titleStart, bodyStart };
+  });
+
+  const result: string[] = [];
+  const leading = block.slice(0, sections[0].titleStart).trim();
+  if (leading) result.push(leading);
+
+  sections.forEach((section, index) => {
+    const nextTitleStart = sections[index + 1]?.titleStart ?? block.length;
+    const body = block.slice(section.bodyStart, nextTitleStart).trim();
+    result.push(`${section.title}：${body}`);
+  });
+  return result.filter(Boolean);
+}
+
+export function readingTextBlocks(text: string) {
+  const rawBlocks = humanReadableAiText(text)
+    .split(/\n{2,}/)
+    .map((block) =>
+      block
+        .split(/\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !isDividerLine(line))
+        .join("\n")
+        .trim()
+    )
+    .filter(Boolean);
+
+  return mergeReadingBlocks(rawBlocks)
+    .flatMap(splitInlineReadingSections)
+    .map((block) => block.trim())
+    .filter(Boolean);
+}
+
 // ---------------------------------------------------------------------------
 // Difficulty / Priority helpers
 // ---------------------------------------------------------------------------
@@ -260,6 +333,11 @@ export function priorityLabel(value?: ModulePriority) {
   if (value === "high") return "高重要";
   if (value === "low") return "低重要";
   return "中重要";
+}
+
+export function moduleImportanceLabel(module: StudyTask, allModules?: StudyTask[]) {
+  const modules = allModules?.length ? allModules : [module];
+  return priorityLabel(moduleImportanceBucket(module, modules));
 }
 
 // ---------------------------------------------------------------------------
@@ -401,12 +479,89 @@ export function toProjectPayload(project: StudyProject) {
 // Parse AI plan output → StudyTask[]
 // ---------------------------------------------------------------------------
 
-type DailyPlanItem = {
+export type DailyPlanItem = {
   module_id: string;
   date: string;
   day_order: number;
   reason?: string;
 };
+
+export function dailyPlanDates(project: Pick<StudyProject, "exam_date">, today = dateKey()) {
+  const todayDate = new Date(`${today}T00:00:00`);
+  const examDate = new Date(`${project.exam_date}T00:00:00`);
+  if (Number.isNaN(examDate.getTime()) || examDate < todayDate) return [today];
+  return dateRange(today, project.exam_date);
+}
+
+export function moduleImportanceBucket(module: StudyTask, sortedModules: StudyTask[]): ModulePriority {
+  if (typeof module.importance_rank !== "number") return module.priority || "medium";
+  const rank = module.importance_rank;
+  const total = Math.max(1, sortedModules.length);
+  if (rank <= Math.ceil(total / 3)) return "high";
+  if (rank <= Math.ceil((total * 2) / 3)) return "medium";
+  return "low";
+}
+
+export function buildBalancedDailyPlan(
+  modules: StudyTask[],
+  project: Pick<StudyProject, "exam_date" | "daily_minutes">,
+  today = dateKey(),
+  aiItems: DailyPlanItem[] = []
+): DailyPlanItem[] {
+  const dates = dailyPlanDates(project, today);
+  const moduleMap = new Map(modules.map((module) => [module.id, module]));
+  const aiReasonByModule = new Map(
+    aiItems
+      .filter((item) => moduleMap.has(item.module_id))
+      .map((item) => [item.module_id, item.reason || ""])
+  );
+  const days = dates.map((date) => ({
+    date,
+    minutes: 0,
+    counts: { high: 0, medium: 0, low: 0 } as Record<ModulePriority, number>,
+    modules: [] as { module: StudyTask; bucket: ModulePriority }[]
+  }));
+  const sorted = [...modules].sort((a, b) => {
+    const rankA = a.importance_rank ?? 9999;
+    const rankB = b.importance_rank ?? 9999;
+    return rankA - rankB || taskOrder(a, 0) - taskOrder(b, 0);
+  });
+  const buckets: Record<ModulePriority, StudyTask[]> = { high: [], medium: [], low: [] };
+  sorted.forEach((module) => buckets[moduleImportanceBucket(module, sorted)].push(module));
+
+  (["high", "medium", "low"] as ModulePriority[]).forEach((bucket) => {
+    buckets[bucket].forEach((module) => {
+      const candidates = days.filter((day) => day.minutes + module.estimated_minutes <= project.daily_minutes);
+      const pool = candidates.length ? candidates : days;
+      const target = pool
+        .slice()
+        .sort((a, b) =>
+          a.counts[bucket] - b.counts[bucket] ||
+          a.minutes - b.minutes ||
+          a.date.localeCompare(b.date)
+        )[0];
+      target.modules.push({ module, bucket });
+      target.minutes += module.estimated_minutes;
+      target.counts[bucket] += 1;
+    });
+  });
+
+  return days.flatMap((day) =>
+    day.modules
+      .sort((a, b) => {
+        const weight = { high: 0, medium: 1, low: 2 };
+        return weight[a.bucket] - weight[b.bucket] ||
+          (a.module.importance_rank ?? 9999) - (b.module.importance_rank ?? 9999) ||
+          taskOrder(a.module, 0) - taskOrder(b.module, 0);
+      })
+      .map(({ module }, index) => ({
+        module_id: module.id,
+        date: day.date,
+        day_order: index + 1,
+        reason: aiReasonByModule.get(module.id) || "按考试倒计时和重要性均衡安排。"
+      }))
+  );
+}
 
 export function parseModulesFromPlan(content: string, projectId: string, noteId: string, existingCount: number, makeId: () => string): StudyTask[] {
   const jsonTexts = getJsonArrayTexts(content);
@@ -578,14 +733,15 @@ export function parseDailyPlan(content: string): DailyPlanItem[] {
           const record = item as Record<string, unknown>;
 
           // Get value by trying multiple possible keys (with/without underscores due to stripMarkdown)
-          const getKey = (...keys: string[]): string => {
+          const getKeyFrom = (source: Record<string, unknown>, ...keys: string[]): string => {
             for (const k of keys) {
-              const v = record[k];
+              const v = source[k];
               if (typeof v === "string" && v.trim()) return v.trim();
               if (typeof v === "number") return String(v);
             }
             return "";
           };
+          const getKey = (...keys: string[]) => getKeyFrom(record, ...keys);
 
           // Day-grouped format: {date, modules: [{module_id, ...}], total_minutes}
           if ("modules" in record && Array.isArray(record.modules)) {
@@ -595,7 +751,7 @@ export function parseDailyPlan(content: string): DailyPlanItem[] {
             for (let mi = 0; mi < (record.modules as unknown[]).length; mi++) {
               const m = (record.modules as unknown[])[mi] as Record<string, unknown> | null;
               if (!m || typeof m !== "object") continue;
-              const moduleId = getKey.call(null, "module_id", "moduleId", "moduleid", "id");
+              const moduleId = getKeyFrom(m, "module_id", "moduleId", "moduleid", "id");
               if (!moduleId) continue;
               const dayOrder = Number(m.day_order ?? m.dayOrder ?? m.dayorder ?? mi + 1);
               items.push({
@@ -724,10 +880,17 @@ export function parsePracticeQuestions(text: string): string[] {
   return questions.length >= 2 ? questions : [cleaned];
 }
 
+function splitChoiceOptions(line: string) {
+  return line
+    .split(/\s+(?=[A-Ea-e][.．、]\s*)/)
+    .map((part) => part.trim())
+    .filter((part) => /^[A-Ea-e][.．、]/.test(part));
+}
+
 export function parseMockQuestions(content: string): ParsedMockPaper {
   const sections = content.split("【题目解析】");
   const examPart = sections[0] || content;
-  const answerPart = sections.length > 1 ? "【题目解析】" + sections.slice(1).join("【题目解析】") : "";
+  const answerPart = sections.length > 1 ? sections.slice(1).join("\n").trim() : "";
 
   const questions: ParsedQuestion[] = [];
   const lines = examPart.split("\n");
@@ -758,7 +921,7 @@ export function parseMockQuestions(content: string): ParsedMockPaper {
         while (j < lines.length && j < nextIdx + 8) {
           const optLine = lines[j].trim();
           if (/^[A-Ea-e][.．、]/.test(optLine) && optLine.length < 200) {
-            options.push(optLine);
+            options.push(...splitChoiceOptions(optLine));
             j++;
           } else if (optLine === "" || /^\d+[.、）]/.test(optLine) || /^[一二三四五六七八九十]+[、.．]/.test(optLine)) {
             break;
@@ -839,4 +1002,3 @@ export function gradePerQuestion(gradingText: string, questionCount: number): Gr
 // ---------------------------------------------------------------------------
 // Status tone
 // ---------------------------------------------------------------------------
-
