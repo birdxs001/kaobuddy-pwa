@@ -1,4 +1,4 @@
-import type { CardType, LearnCard, MaterialKind, StudyMaterial, StudyProject, StudyTask } from "./types";
+import type { CardType, LearnCard, MaterialKind, ParsedMockPaper, ParsedQuestion, StudyMaterial, StudyProject, StudyTask } from "./types";
 
 // ---------------------------------------------------------------------------
 // Dates & time helpers
@@ -29,6 +29,24 @@ export function dateLabel(date: string) {
 export function normalizeMinutes(value: number) {
   if (!Number.isFinite(value)) return 30;
   return Math.max(10, Math.min(480, Math.round(value)));
+}
+
+export function dateRange(from: string, to: string): string[] {
+  const result: string[] = [];
+  const start = new Date(`${from}T00:00:00`);
+  const end = new Date(`${to}T00:00:00`);
+  let current = new Date(start);
+  while (current <= end) {
+    result.push(dateKey(current));
+    current.setDate(current.getDate() + 1);
+  }
+  return result;
+}
+
+export function dayOfWeekLabel(date: string): string {
+  const d = new Date(`${date}T00:00:00`);
+  const labels = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  return labels[d.getDay()] || "";
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +432,7 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
         if (!title || seen.has(title)) return [];
         seen.add(title);
         const rawMinutes = Number(record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes);
-        const rawRank = Number(record.importance_rank ?? record.importanceRank ?? record.rank);
+        const rawRank = Number(record.importance_rank ?? record.importanceRank ?? record.importancerank ?? record.rank);
         const line = humanReadableAiText(JSON.stringify([record]));
         return [{
           id: makeId(),
@@ -540,50 +558,84 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
 }
 
 export function parseDailyPlan(content: string): DailyPlanItem[] {
-  // Try multiple strategies to extract JSON
-  let jsonText = "";
+  // Try to extract and parse JSON from the raw content
+  const tryParse = (text: string): DailyPlanItem[] | null => {
+    // Strategy A: find JSON array directly in text (no markdown stripping)
+    const arrays = getJsonArrayTexts(text);
+    // Strategy B: strip code fences and find JSON
+    const noFence = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "");
+    const arraysNoFence = getJsonArrayTexts(noFence);
+    const allArrays = [...arrays, ...arraysNoFence];
 
-  // Strategy 1: direct JSON array extraction
-  const arrays = getJsonArrayTexts(content);
-  if (arrays.length) jsonText = arrays[0];
+    for (const jsonText of allArrays) {
+      try {
+        const data = JSON.parse(jsonText);
+        if (!Array.isArray(data)) continue;
 
-  // Strategy 2: strip code fences and try again
-  if (!jsonText) {
-    const noFence = content.replace(/```json\s*/gi, "").replace(/```\s*/g, "");
-    const arrays2 = getJsonArrayTexts(noFence);
-    if (arrays2.length) jsonText = arrays2[0];
-  }
+        const items: DailyPlanItem[] = [];
+        for (const item of data) {
+          if (!item || typeof item !== "object") continue;
+          const record = item as Record<string, unknown>;
 
-  if (!jsonText) return [];
-  try {
-    const data = JSON.parse(jsonText);
-    if (!Array.isArray(data)) return [];
-    return data.flatMap((item) => {
-      if (!item || typeof item !== "object") return [];
-      const record = item as Record<string, unknown>;
-      const moduleId = String(record.module_id || record.moduleId || record.id || "");
-      const rawDate = String(record.date || "");
-      // Normalize date: accept YYYY-MM-DD, YYYY/MM/DD, ISO timestamps
-      let date = rawDate.trim();
-      const isoMatch = date.match(/^(\d{4})-(\d{2})-(\d{2})/);
-      const slashMatch = date.match(/^(\d{4})\/(\d{2})\/(\d{2})/);
-      if (isoMatch) {
-        date = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
-      } else if (slashMatch) {
-        date = `${slashMatch[1]}-${slashMatch[2]}-${slashMatch[3]}`;
+          // Get value by trying multiple possible keys (with/without underscores due to stripMarkdown)
+          const getKey = (...keys: string[]): string => {
+            for (const k of keys) {
+              const v = record[k];
+              if (typeof v === "string" && v.trim()) return v.trim();
+              if (typeof v === "number") return String(v);
+            }
+            return "";
+          };
+
+          // Day-grouped format: {date, modules: [{module_id, ...}], total_minutes}
+          if ("modules" in record && Array.isArray(record.modules)) {
+            const rawDate = getKey("date");
+            const date = normalizeDate(rawDate);
+            if (!date || date === "unplanned") continue;
+            for (let mi = 0; mi < (record.modules as unknown[]).length; mi++) {
+              const m = (record.modules as unknown[])[mi] as Record<string, unknown> | null;
+              if (!m || typeof m !== "object") continue;
+              const moduleId = getKey.call(null, "module_id", "moduleId", "moduleid", "id");
+              if (!moduleId) continue;
+              const dayOrder = Number(m.day_order ?? m.dayOrder ?? m.dayorder ?? mi + 1);
+              items.push({
+                module_id: moduleId, date,
+                day_order: Number.isFinite(dayOrder) && dayOrder > 0 ? dayOrder : mi + 1,
+                reason: stripMarkdown(String(m.reason || ""))
+              });
+            }
+            continue;
+          }
+
+          // Flat format: {module_id, date, day_order, reason}
+          const moduleId = getKey("module_id", "moduleId", "moduleid", "id");
+          const rawDate = getKey("date");
+          const date = normalizeDate(rawDate);
+          if (!moduleId || !date) continue;
+          const dayOrder = Number(record.day_order ?? record.dayOrder ?? record.dayorder ?? record.order ?? 0);
+          items.push({
+            module_id: moduleId, date,
+            day_order: Number.isFinite(dayOrder) && dayOrder > 0 ? dayOrder : 1,
+            reason: stripMarkdown(String(record.reason || ""))
+          });
+        }
+        if (items.length) return items;
+      } catch {
+        // Try next array
       }
-      if (!moduleId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return [];
-      const dayOrder = Number(record.day_order ?? record.dayOrder ?? record.order ?? 0);
-      return [{
-        module_id: moduleId,
-        date,
-        day_order: Number.isFinite(dayOrder) && dayOrder > 0 ? dayOrder : 1,
-        reason: stripMarkdown(String(record.reason || ""))
-      }];
-    });
-  } catch {
-    return [];
-  }
+    }
+    return null;
+  };
+
+  return tryParse(content) || [];
+}
+
+function normalizeDate(raw: string): string {
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  const slashMatch = raw.match(/^(\d{4})\/(\d{2})\/(\d{2})/);
+  if (slashMatch) return `${slashMatch[1]}-${slashMatch[2]}-${slashMatch[3]}`;
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -672,19 +724,58 @@ export function parsePracticeQuestions(text: string): string[] {
   return questions.length >= 2 ? questions : [cleaned];
 }
 
-export function parseMockQuestions(content: string): { questions: string[]; answerKey: string } {
+export function parseMockQuestions(content: string): ParsedMockPaper {
   const sections = content.split("【题目解析】");
   const examPart = sections[0] || content;
   const answerPart = sections.length > 1 ? "【题目解析】" + sections.slice(1).join("【题目解析】") : "";
-  const questions: string[] = [];
+
+  const questions: ParsedQuestion[] = [];
   const lines = examPart.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (/^\d+[.、）]/.test(trimmed) && !trimmed.match(/^[一二三四五六七八九十]、/)) {
-      questions.push(trimmed);
+  let currentSectionType: "choice" | "essay" = "essay";
+  let i = 0;
+
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) { i++; continue; }
+
+    if (/^[一二三四五六七八九十]+[、.．]/.test(trimmed) && /选择/.test(trimmed)) {
+      currentSectionType = "choice";
+      i++; continue;
     }
+    if (/^[一二三四五六七八九十]+[、.．]/.test(trimmed) && /简答|问答|论述|计算|填空/.test(trimmed)) {
+      currentSectionType = "essay";
+      i++; continue;
+    }
+
+    if (/^\d+[.、）]/.test(trimmed) && !/^[一二三四五六七八九十]、/.test(trimmed)) {
+      const question = trimmed;
+      let options: string[] | undefined;
+
+      if (currentSectionType === "choice") {
+        options = [];
+        const nextIdx = i + 1;
+        let j = nextIdx;
+        while (j < lines.length && j < nextIdx + 8) {
+          const optLine = lines[j].trim();
+          if (/^[A-Ea-e][.．、]/.test(optLine) && optLine.length < 200) {
+            options.push(optLine);
+            j++;
+          } else if (optLine === "" || /^\d+[.、）]/.test(optLine) || /^[一二三四五六七八九十]+[、.．]/.test(optLine)) {
+            break;
+          } else {
+            break;
+          }
+        }
+        i = j - 1;
+      }
+
+      questions.push({ type: currentSectionType, question, options });
+    }
+
+    i++;
   }
-	  return { questions, answerKey: answerPart };
+
+  return { questions, answerKey: answerPart };
 }
 
 export function extractMistakesFromGrading(gradingText: string): string[] {
@@ -707,6 +798,44 @@ export function extractMistakesFromGrading(gradingText: string): string[] {
   return mistakes.slice(0, 10);
 }
 
+/** Per-question grading verdict after mock exam scoring. */
+export type GradingVerdict = "correct" | "partial" | "wrong" | "unknown";
+
+export function gradePerQuestion(gradingText: string, questionCount: number): GradingVerdict[] {
+  const verdicts: GradingVerdict[] = new Array(questionCount);
+  for (let i = 0; i < questionCount; i++) verdicts[i] = "unknown";
+
+  function setVerdict(idx: number, marker: string) {
+    const v = marker === "✓" || marker === "✔" ? "correct"
+      : marker === "✗" || marker === "✘" || marker === "×" ? "wrong"
+      : marker === "△" ? "partial"
+      : "unknown";
+    if (v !== "unknown") verdicts[idx] = v;
+  }
+
+  // Parse the structured format: 第N题【✓/✗/△】
+  const re = /第\s*(\d+)\s*题\s*【([✓✗△✘×✔])】/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(gradingText)) !== null) {
+    const qNum = parseInt(match[1], 10);
+    const idx = qNum - 1;
+    if (idx < 0 || idx >= questionCount) continue;
+    setVerdict(idx, match[2]);
+  }
+
+  // Fallback: try numbered format "1. ✓", "1. ✗", "1. △"
+  if (verdicts.every(v => v === "unknown")) {
+    const fallbackRe = /(?:^|\n)\s*(\d+)\s*[.、．）]\s*([✓✗△✘×✔])/gm;
+    while ((match = fallbackRe.exec(gradingText)) !== null) {
+      const qNum = parseInt(match[1], 10);
+      const idx = qNum - 1;
+      if (idx < 0 || idx >= questionCount) continue;
+      setVerdict(idx, match[2]);
+    }
+  }
+
+  return verdicts;
+}
 // ---------------------------------------------------------------------------
 // Status tone
 // ---------------------------------------------------------------------------

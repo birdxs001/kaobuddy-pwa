@@ -1,4 +1,5 @@
 import type { AiNote, ApiConfig, AppExport, InviteState, Mistake, MockAttempt, StudyMaterial, StudyProject, StudyTask, WeakPoint } from "./types";
+import { defaultInviteState, normalizeInviteState } from "./inviteState";
 
 const DB_NAME = "kaobuddy-db";
 const DB_VERSION = 2;
@@ -143,19 +144,12 @@ export const storage = {
   },
   saveInviteState: (state: InviteState) => localStorage.setItem(INVITE_STATE_KEY, JSON.stringify(state)),
   getInviteState: (): InviteState => {
-    const fallback: InviteState = {
-      inviteCode: "",
-      remaining: 0,
-      remainingBudgetCny: 0,
-      validatedAt: "",
-      aiMode: "custom",
-    };
     const raw = localStorage.getItem(INVITE_STATE_KEY);
-    if (!raw) return fallback;
+    if (!raw) return defaultInviteState;
     try {
-      return { ...fallback, ...(JSON.parse(raw) as Partial<InviteState>) };
+      return normalizeInviteState(JSON.parse(raw) as Partial<InviteState>);
     } catch {
-      return fallback;
+      return defaultInviteState;
     }
   },
   exportAll: async (): Promise<AppExport> => ({

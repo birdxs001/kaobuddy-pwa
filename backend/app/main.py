@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -264,11 +265,21 @@ def _format_daily_plan_modules(request: DailyPlanRequest) -> str:
 
 
 async def _run_daily_plan(request: DailyPlanRequest) -> AiResponse:
+    try:
+        exam_date = date.fromisoformat(request.project.exam_date)
+    except (ValueError, TypeError):
+        exam_date = date.today() + timedelta(days=30)
+    today = date.today()
+    days_remaining = max(1, (exam_date - today).days)
+    total_dates = [(today + timedelta(days=i)).isoformat() for i in range(days_remaining + 1)]
+    total_module_minutes = sum(m.estimated_minutes for m in request.modules)
+
     user_content = (
-        "请为下面这些未完成知识点生成每日任务分配。只输出 JSON 数组。\n\n"
-        f"【考试项目】\n{format_project(request.project)}\n\n"
-        f"【未完成知识点模块】\n{_format_daily_plan_modules(request)}\n\n"
-        f"【补充要求】\n{request.extra or '无'}"
+        f"今天 {today.isoformat()}，考试 {exam_date.isoformat()}，共 {len(total_dates)} 天。\n"
+        f"每天最多 {request.project.daily_minutes} 分钟，所有模块共 {total_module_minutes} 分钟。\n\n"
+        f"请把下面 {len(request.modules)} 个模块分配到 {total_dates[0]} ~ {total_dates[-1]} 的每一天：\n"
+        f"{_format_daily_plan_modules(request)}\n\n"
+        f"补充要求：{request.extra or '无'}"
     )
     messages = [
         ChatMessage(role="system", content=DAILY_PLAN_SYSTEM_PROMPT),
@@ -449,7 +460,9 @@ async def grade_mock(request: MockGradeRequest) -> AiResponse:
         f"【考试项目】\n{format_project(request.project)}\n\n"
         f"【模考试卷（含参考答案）】\n{request.exam_content}\n\n"
         f"【考生作答】\n{request.user_answers}\n\n"
-        f"请按照【题目解析】中的参考答案逐题评分，并给出总分、正确率和薄弱知识点。"
+        f"请逐题评分：选择题对答案字母即可，简答题按【题目解析】中的得分要点逐点给分，"
+        f"考生措辞不需要和参考答案完全一致，要点意思对就得分。"
+        f"最后给出总分、正确率和薄弱知识点。"
     )
     messages = [
         ChatMessage(role="system", content=MOCK_GRADE_SYSTEM_PROMPT),

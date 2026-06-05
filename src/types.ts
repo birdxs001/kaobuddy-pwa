@@ -133,7 +133,19 @@ export type MockAttempt = {
   duration_minutes: number;
   feedback: string;
   source_note_id?: string;
+  test_mode?: "text" | "answer";
   created_at: string;
+};
+
+export type ParsedQuestion = {
+  type: "choice" | "essay";
+  question: string;
+  options?: string[];
+};
+
+export type ParsedMockPaper = {
+  questions: ParsedQuestion[];
+  answerKey: string;
 };
 
 export type AppExport = {

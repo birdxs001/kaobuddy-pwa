@@ -1,0 +1,32 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { extractMistakesFromGrading, parseMockQuestions } from "../../src/utils.ts";
+
+test("parseMockQuestions splits visible questions from hidden answer key", () => {
+  const parsed = parseMockQuestions(`【试题】
+一、选择题
+1. 进程从运行态进入阻塞态的原因是？
+2. 死锁的四个必要条件是什么？
+
+【题目解析】
+1. 答案：B。解析：等待 I/O。
+2. 答案：互斥、请求保持、不剥夺、循环等待。`);
+
+  assert.deepEqual(parsed.questions, [
+    "1. 进程从运行态进入阻塞态的原因是？",
+    "2. 死锁的四个必要条件是什么？"
+  ]);
+  assert.match(parsed.answerKey, /答案：B/);
+  assert.doesNotMatch(parsed.answerKey, /【试题】/);
+});
+
+test("extractMistakesFromGrading keeps only wrong or deducted questions", () => {
+  const mistakes = extractMistakesFromGrading(`1. 得分：5/5。答案正确。
+2. 得分：0/5。答案不正确，扣分原因：把阻塞态写成就绪态。
+3. 得分：3/5。扣分原因：漏写循环等待条件。`);
+
+  assert.deepEqual(mistakes, [
+    "2. 得分：0/5。答案不正确，扣分原因：把阻塞态写成就绪态。",
+    "3. 得分：3/5。扣分原因：漏写循环等待条件。"
+  ]);
+});

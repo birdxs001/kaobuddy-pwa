@@ -9,6 +9,8 @@ import {
 import { gradeMock, gradePractice, importVideo, recognizeHandwriting, runAi, runCardsStream, runDailyPlan, runMemorize, runModulePractice, testApiConfig, verifyInviteCode, type AiAuthPayload, type AiResult } from "./api";
 import { BrandMark, RenderHumanText, StatusToast } from "./components/Common";
 import { readAsDataUrl, readDocumentText, readPdfText, readTextFile } from "./fileReaders";
+import { getGenerationGuard } from "./generationGuards";
+import { applyInviteVerification, isInviteReady, updateInviteCodeDraft } from "./inviteState";
 import { exportMockExamPdf } from "./pdfExport";
 import { createId, storage } from "./storage";
 import type {
@@ -18,14 +20,14 @@ import type {
 } from "./types";
 import {
   compactTitle, dateKey, dateLabel, daysLeft, difficultyLabel,
-  displayModuleTitle, extractModuleTitle, humanReadableAiText,
-  isGenericModuleTitle, isGenericModuleText, isStudyModule,
+  displayModuleTitle, extractModuleTitle, gradePerQuestion, humanReadableAiText,
+  isStudyModule,
   materialKindLabel, moduleKey, moduleOnlyBelongsToMaterial,
   moduleSourceContext, moduleStatus, normalizeMinutes, nowIso,
   parseCardsFromAi, parseDailyPlan, parseDifficulty, parseMockQuestions,
   parseModulesFromPlan, parsePracticeQuestions, parsePriority,
   priorityLabel, statusTone, stripMarkdown, taskOrder, toProjectPayload,
-  type ModuleDifficulty, type ModulePriority, type ModuleStatus
+  type ModuleStatus
 } from "./utils";
 
 type ProjectTab = "overview" | "materials" | "plan" | "mock" | "gap" | "module" | "result" | "review";
@@ -58,14 +60,6 @@ const emptyProject = {
   daily_minutes: 120,
   target_score: "",
   weak_points: ""
-};
-
-const emptyModule = {
-  title: "",
-  estimated_minutes: 45,
-  priority: "medium" as ModulePriority,
-  difficulty: "medium" as ModuleDifficulty,
-  note: ""
 };
 
 const emptyMistake = {
@@ -140,11 +134,11 @@ export default function App() {
   const [videoUrl, setVideoUrl] = useState("");
   const [handwritingHint, setHandwritingHint] = useState("");
   const [extra, setExtra] = useState("");
-  const [moduleDraft, setModuleDraft] = useState(emptyModule);
   const [mistakeDraft, setMistakeDraft] = useState(emptyMistake);
   const [weakPointDraft, setWeakPointDraft] = useState(emptyWeakPoint);
   const [mockQuestionTypes, setMockQuestionTypes] = useState("");
   const [mockDuration, setMockDuration] = useState<number>(0);
+  const [mockMode, setMockMode] = useState<"text" | "answer">("text");
   const [editingMockId, setEditingMockId] = useState("");
   const [draggingModuleId, setDraggingModuleId] = useState("");
   const [selectedModuleId, setSelectedModuleId] = useState("");
@@ -173,6 +167,7 @@ export default function App() {
   const [activeMockAttempt, setActiveMockAttempt] = useState<MockAttempt | null>(null);
   const [mockUserAnswers, setMockUserAnswers] = useState<Record<string, string>>({});
   const [mockScoringResult, setMockScoringResult] = useState<string | null>(null);
+  const [selectedMockMistakes, setSelectedMockMistakes] = useState<number[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [resultNote, setResultNote] = useState<AiNote | null>(null);
   const [status, setStatus] = useState("准备好了。");
@@ -230,6 +225,10 @@ export default function App() {
     () => mistakes.filter((item) => item.project_id === activeProject?.id),
     [mistakes, activeProject]
   );
+  const visibleMistakes = useMemo(
+    () => scopedMistakes.filter((item) => mistakeFilter === "all" || item.status === mistakeFilter),
+    [scopedMistakes, mistakeFilter]
+  );
   const scopedWeakPoints = useMemo(
     () => weakPoints.filter((item) => item.project_id === activeProject?.id),
     [weakPoints, activeProject]
@@ -270,6 +269,15 @@ export default function App() {
     : null;
   const latestPlanNote = scopedNotes.find((note) => note.mode === "plan");
   const currentResultNote = resultNote || scopedNotes[0] || null;
+  const activeMockNote = activeMockAttempt?.source_note_id
+    ? scopedNotes.find((note) => note.id === activeMockAttempt.source_note_id) || null
+    : null;
+  const activeMockPaper = activeMockNote ? parseMockQuestions(activeMockNote.content) : { questions: [], answerKey: "" };
+  const mockQuestionVerdicts = mockScoringResult && activeMockPaper.questions.length
+    ? gradePerQuestion(mockScoringResult, activeMockPaper.questions.length)
+    : [];
+  const mockMistakeCandidates = activeMockPaper.questions
+    .map((q, i) => ({ index: i, question: q, verdict: mockQuestionVerdicts[i] || "unknown" as const }));
   const statusMessage = busy ? busyLabel : status;
   const statusClass = `status ${busy ? "loading" : statusTone(statusMessage)}`;
   const authPayload = useMemo<AiAuthPayload>(() => (
@@ -303,6 +311,10 @@ export default function App() {
         setStatus("先填邀请码，再让 AI 干活。");
         return false;
       }
+      if (!isInviteReady(inviteState)) {
+        setStatus("先验证邀请码，再让 AI 干活。");
+        return false;
+      }
       return true;
     }
     return requireApi();
@@ -319,13 +331,7 @@ export default function App() {
     setBusyLabel("正在验证邀请码...");
     try {
       const result = await verifyInviteCode(code);
-      const nextState: InviteState = {
-        inviteCode: code.toUpperCase(),
-        remaining: result.remaining,
-        remainingBudgetCny: result.remainingBudgetCny,
-        validatedAt: nowIso(),
-        aiMode: "invite",
-      };
+      const nextState = applyInviteVerification(inviteState, code, result, nowIso());
       saveInviteState(nextState);
       setStatus(result.valid ? result.message : result.message);
     } catch (error) {
@@ -589,12 +595,14 @@ export default function App() {
   }
 
   async function runMode(mode: "plan" | "teach" | "practice" | "mock-exam", title: string, extraOverride?: string) {
-    if (!requireProject() || !requireAi()) return;
-    if (!scopedMaterials.length && mode === "plan") {
-      setStatus("先导入资料，再生成知识点模块。现在不会按空资料乱编计划。");
-      setActiveTab("materials");
+    if (!requireProject()) return;
+    const generationGuard = getGenerationGuard({ mode, materialCount: scopedMaterials.length });
+    if (generationGuard) {
+      setStatus(generationGuard.status);
+      setActiveTab(generationGuard.nextTab);
       return;
     }
+    if (!requireAi()) return;
     setBusyLabel(`正在生成${title}...`);
     const abort = new AbortController();
     setGenerationAbort(abort);
@@ -610,14 +618,15 @@ export default function App() {
         project_id: activeProject!.id,
         mode: mode === "mock-exam" ? "mock" : mode,
         title,
-        content: stripMarkdown(result.content),
+        content: result.content,
         created_at: nowIso()
       };
       await storage.saveNote(note);
+      let mockAttempt: MockAttempt | null = null;
       if (mode === "mock-exam") {
         const durationMatch = (extraOverride || extra || "").match(/考试时长[：:]?\s*(\d+)/);
         const durationMinutes = durationMatch ? Number(durationMatch[1]) : 30;
-        await storage.saveMockAttempt({
+        mockAttempt = {
           id: createId("mock"),
           project_id: activeProject!.id,
           title: `模拟考 ${new Date().toLocaleDateString("zh-CN")} ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`,
@@ -625,12 +634,27 @@ export default function App() {
           duration_minutes: durationMinutes,
           feedback: "",
           source_note_id: note.id,
+          test_mode: mockMode,
           created_at: nowIso()
-        });
+        };
+        await storage.saveMockAttempt(mockAttempt);
       }
-      setResultNote(note);
-      setActiveTab("result");
-      setStatus(`${title} 已生成，已经打开结果页。`);
+      if (mode === "mock-exam" && mockMode === "answer" && mockAttempt) {
+        setActiveMockAttempt(mockAttempt);
+        setMockUserAnswers({});
+        setMockScoringResult(null);
+        setSelectedMockMistakes([]);
+        setMockExamState("taking");
+        setActiveTab("mock");
+        setStatus("AI答题模拟考已生成，先做题，提交后再看批改和参考解析。");
+      } else if (mode === "plan") {
+        setResultNote(note);
+        await createModulesFromPlan(note);
+      } else {
+        setResultNote(note);
+        setActiveTab("result");
+        setStatus(`${title} 已生成，已经打开结果页。`);
+      }
       await refresh();
     } catch (error) {
       if ((error as Error).name === "AbortError") { /* cancelGeneration() already sets status */ }
@@ -711,13 +735,65 @@ export default function App() {
     if (!activeProject) return;
     const parsed = parseModulesFromPlan(note.content, activeProject.id, note.id, visibleModules.length, () => createId('module'));
     if (!parsed.length) return setStatus("这份计划没拆出进程、线程这类明确知识点名，可以重新生成或手动新增模块。");
-    await Promise.all(parsed.map((item, index) => storage.saveTask({
-      ...item,
-      importance_rank: item.importance_rank || index + 1,
-      difficulty: item.difficulty || "medium",
-      exam_points: item.exam_points || item.note || ""
-    })));
-    setStatus(`${parsed.length} 个知识模块已加入计划。`);
+
+    // Build a lookup of existing modules by normalized title key,
+    // so regenerating the plan preserves memorization/cards/etc. for modules
+    // that already exist instead of creating duplicates.
+    const existingByKey = new Map<string, StudyTask>();
+    for (const mod of visibleModules) {
+      existingByKey.set(moduleKey(mod), mod);
+    }
+
+    const matchedOldIds = new Set<string>();
+    await Promise.all(parsed.map((item, index) => {
+      const newKey = displayModuleTitle(item.title, item.note).replace(/\s+/g, "");
+      const existing = existingByKey.get(newKey);
+
+      if (existing) {
+        // Module already exists — update metadata from the fresh plan but
+        // preserve AI-generated content (memorization, cards, explanations, etc.).
+        matchedOldIds.add(existing.id);
+        return storage.saveTask({
+          ...existing,
+          source_note_id: note.id,
+          title: item.title,
+          difficulty: item.difficulty || existing.difficulty || "medium",
+          importance_rank: item.importance_rank || index + 1,
+          exam_points: item.exam_points || existing.exam_points || item.note || "",
+          estimated_minutes: item.estimated_minutes || existing.estimated_minutes,
+          priority: item.priority || existing.priority,
+          source_material_id: item.source_material_id || existing.source_material_id,
+          source_title: item.source_title || existing.source_title,
+          source_section: item.source_section || existing.source_section,
+          evidence: item.evidence || existing.evidence,
+          note: item.note || existing.note,
+          updated_at: nowIso()
+        });
+      }
+
+      // New module — save fresh.
+      return storage.saveTask({
+        ...item,
+        importance_rank: item.importance_rank || index + 1,
+        difficulty: item.difficulty || "medium",
+        exam_points: item.exam_points || item.note || ""
+      });
+    }));
+
+    // Remove modules that no longer appear in the regenerated plan
+    // (e.g. because the user removed the underlying material).
+    const removed = visibleModules.filter((mod) => !matchedOldIds.has(mod.id));
+    if (removed.length > 0) {
+      await Promise.all(removed.map((mod) => storage.deleteTask(mod.id)));
+    }
+
+    const addedCount = parsed.length - matchedOldIds.size;
+    const keptCount = matchedOldIds.size;
+    const parts: string[] = [];
+    if (addedCount > 0) parts.push(`新增 ${addedCount} 个`);
+    if (keptCount > 0) parts.push(`保留 ${keptCount} 个`);
+    if (removed.length > 0) parts.push(`移除 ${removed.length} 个`);
+    setStatus(`${parts.join("，")} 知识模块已加入计划。`);
     setActiveTab("plan");
     await refresh();
   }
@@ -727,34 +803,6 @@ export default function App() {
     if (!ok) return;
     await storage.deleteMaterial(item.id);
     setStatus("资料已删除。");
-    await refresh();
-  }
-
-  async function saveModule(event: FormEvent) {
-    event.preventDefault();
-    if (!requireProject()) return;
-    if (!moduleDraft.title.trim()) return setStatus("知识模块名称要填一下。");
-    if (isGenericModuleTitle(moduleDraft.title)) return setStatus("这里要填具体知识点，比如进程、线程、死锁，不能填每日任务或复习安排。");
-    const timestamp = nowIso();
-    await storage.saveTask({
-      id: createId("module"),
-      project_id: activeProject!.id,
-      title: moduleDraft.title.trim(),
-      date: dateKey(),
-      estimated_minutes: normalizeMinutes(moduleDraft.estimated_minutes),
-      status: "todo",
-      module_status: "todo",
-      priority: moduleDraft.priority,
-      difficulty: moduleDraft.difficulty,
-      importance_rank: visibleModules.length + 1,
-      exam_points: moduleDraft.note.trim(),
-      order: visibleModules.length,
-      note: moduleDraft.note.trim(),
-      created_at: timestamp,
-      updated_at: timestamp
-    });
-    setModuleDraft(emptyModule);
-    setStatus("知识模块已加入计划。");
     await refresh();
   }
 
@@ -995,6 +1043,98 @@ export default function App() {
     await refresh();
   }
 
+  function openMockForTaking(mock: MockAttempt, note: AiNote) {
+    setActiveMockAttempt(mock);
+    setResultNote(note);
+    setMockUserAnswers({});
+    setMockScoringResult(mock.feedback || null);
+    if (mock.feedback) {
+      const parsed = parseMockQuestions(note.content);
+      const verdicts = gradePerQuestion(mock.feedback, parsed.questions.length);
+      setSelectedMockMistakes(verdicts.reduce<number[]>((acc, v, i) => (v === "wrong" || v === "partial") ? [...acc, i] : acc, []));
+    } else {
+      setSelectedMockMistakes([]);
+    }
+    setMockExamState(mock.feedback ? "scored" : "taking");
+  }
+
+  async function submitMockAnswers() {
+    if (!requireProject() || !requireAi()) return;
+    if (!activeMockAttempt?.source_note_id) return setStatus("先选择一份模拟考。");
+    const mockNote = scopedNotes.find((note) => note.id === activeMockAttempt.source_note_id);
+    if (!mockNote) return setStatus("找不到这份模拟考的试卷内容。");
+    const parsed = parseMockQuestions(mockNote.content);
+    if (!parsed.questions.length) return setStatus("这份模拟考没拆出题目，先用答案速览模式查看。");
+    const answeredCount = parsed.questions.filter((_, index) => (mockUserAnswers[String(index)] || "").trim()).length;
+    if (!answeredCount) return setStatus("至少先写一道题的答案，再提交批改。");
+    const userAnswers = parsed.questions
+      .map((q, index) => {
+        const answer = (mockUserAnswers[String(index)] || "").trim() || "未作答";
+        if (q.type === "choice") {
+          return `${q.question}\n选择：${answer}`;
+        }
+        return `${q.question}\n作答：${answer}`;
+      })
+      .join("\n\n");
+    setBusyLabel("AI 正在批改模拟考...");
+    try {
+      const result = await gradeMock({
+        ...authPayload,
+        project: toProjectPayload(activeProject!),
+        materials: scopedMaterials.map(({ id, title, kind, content }) => ({ id, title, kind, content })),
+        exam_content: mockNote.content,
+        user_answers: userAnswers
+      });
+      const feedback = stripMarkdown(result.content);
+      const score = feedback.match(/【总分】\s*([^\n]+)/)?.[1]?.trim() || "";
+      const updatedMock = { ...activeMockAttempt, score, feedback };
+      await storage.saveMockAttempt(updatedMock);
+      setActiveMockAttempt(updatedMock);
+      setMockScoringResult(feedback);
+      const verdicts = gradePerQuestion(feedback, parsed.questions.length);
+      setSelectedMockMistakes(verdicts.reduce<number[]>((acc, v, i) => (v === "wrong" || v === "partial") ? [...acc, i] : acc, []));
+      setMockExamState("scored");
+      setStatus("批改完成。错题可以勾选后放进查漏补缺。");
+      await refresh();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "模拟考批改失败。");
+    } finally {
+      setBusyLabel("");
+    }
+  }
+
+  async function saveSelectedMockMistakes() {
+    if (!requireProject()) return;
+    if (!selectedMockMistakes.length) return setStatus("先勾选要放进错题本的题。");
+    const timestamp = nowIso();
+    const userAnswerMap: Record<string, string> = {};
+    if (activeMockPaper.questions.length) {
+      activeMockPaper.questions.forEach((q, i) => {
+        userAnswerMap[String(i)] = (mockUserAnswers[String(i)] || "").trim();
+      });
+    }
+    await Promise.all(selectedMockMistakes.map((idx) => {
+      const q = activeMockPaper.questions[idx];
+      const userAnswer = userAnswerMap[String(idx)] || "未作答";
+      const verdictText = mockQuestionVerdicts[idx] === "wrong" ? "批改结果：错误" :
+        mockQuestionVerdicts[idx] === "partial" ? "批改结果：部分正确" : "";
+      return storage.saveMistake({
+        id: createId("mistake"),
+        project_id: activeProject!.id,
+        question: q.question,
+        reason: [verdictText, `你的答案：${userAnswer}`].filter(Boolean).join("；"),
+        fix: "按参考答案和批改意见复盘。",
+        status: "new",
+        source_note_id: activeMockAttempt?.source_note_id,
+        created_at: timestamp,
+        updated_at: timestamp
+      });
+    }));
+    setSelectedMockMistakes([]);
+    setStatus("已放进查漏补缺的错题本。");
+    await refresh();
+  }
+
   async function saveMistake(event: FormEvent) {
     event.preventDefault();
     if (!requireProject()) return;
@@ -1061,7 +1201,7 @@ export default function App() {
       </div>
       {inviteState.aiMode === "invite" ? (
         <>
-          <label>邀请码<input value={inviteState.inviteCode} onChange={(event) => setInviteState({ ...inviteState, inviteCode: event.target.value })} placeholder="输入管理员给你的邀请码" /></label>
+          <label>邀请码<input value={inviteState.inviteCode} onChange={(event) => saveInviteState(updateInviteCodeDraft(inviteState, event.target.value))} placeholder="输入管理员给你的邀请码" /></label>
           <p className="hint">
             {inviteState.validatedAt
               ? "邀请码有效。"
@@ -1163,7 +1303,7 @@ export default function App() {
             </div>
             <div className="command-list">
               <span><FileArrowUp size={18} weight="duotone" />导入课件、教材、往年题、笔记、视频字幕</span>
-              <span><Brain size={18} weight="duotone" />拆成能学的知识模块</span>
+              <span><Brain size={18} weight="duotone" />拆成能学的知识模块，并生成学习卡片</span>
               <span><ClipboardText size={18} weight="duotone" />刷题、模考、查漏</span>
               <span><Cards size={18} weight="duotone" />临考前一个个斩掉</span>
             </div>
@@ -1213,15 +1353,16 @@ export default function App() {
                   <span className="heading-icon"><ListChecks size={20} weight="duotone" /></span>
                   <div>
                     <h2>使用流程</h2>
-                    <p>按这个顺序走，别一上来就让 AI 空资料乱编。</p>
+                    <p>按这个顺序走，先把 AI 连接好，再让资料变成模块、日计划和学习卡片。</p>
                   </div>
                 </div>
                 <ol>
-                  <li>先连接自己的 AI API。</li>
+                  <li>先用邀请码或自己的 API Key 连接 AI。</li>
                   <li>创建一个考试项目，比如操作系统、高数、法考。</li>
-                  <li>把课件、教材、笔记和视频资料放进项目。</li>
-                  <li>让 AI 生成知识模块计划。</li>
-                  <li>按模块学习、拖动顺序、完成后标记，最后用模拟考和复盘查漏补缺。</li>
+                  <li>导入课件、教材、往年题、笔记、手写资料或视频字幕。</li>
+                  <li>生成知识模块计划，再拆成学习卡片和模块任务。</li>
+                  <li>用日计划安排每天要学的模块，按优先级推进今日任务。</li>
+                  <li>学模块、翻卡片、做模块题，最后用模拟考和临考速背查漏补缺。</li>
                 </ol>
                 <div className="actions">
                   <button type="button" className="secondary" onClick={goSetupBack}><ArrowLeft size={18} weight="bold" />上一步</button>
@@ -1396,16 +1537,18 @@ export default function App() {
                 </div>
               </div>
             )}
-            <div className="panel wide next-step-panel">
-              <div>
-                <span className="kind-badge">下一步</span>
-                <h2>{scopedMaterials.length ? "把资料拆成知识模块" : "先把资料放进来"}</h2>
-                <p>{scopedMaterials.length ? "资料库已经有内容了，可以去计划页让 AI 按考点拆模块。" : "先导入课件、教材、往年题、手写笔记或视频字幕，考搭子才有东西可拆。"}</p>
+            {scopedMaterials.length === 0 && (
+              <div className="panel wide next-step-panel">
+                <div>
+                  <span className="kind-badge">下一步</span>
+                  <h2>先把资料放进来</h2>
+                  <p>先导入课件、教材、往年题、手写笔记或视频字幕，考搭子才有东西可拆。</p>
+                </div>
+                <button onClick={() => setActiveTab("materials")}>
+                  <Lightning size={18} weight="bold" />去导入资料
+                </button>
               </div>
-              <button onClick={() => setActiveTab(scopedMaterials.length ? "plan" : "materials")}>
-                <Lightning size={18} weight="bold" />{scopedMaterials.length ? "生成计划" : "去导入资料"}
-              </button>
-            </div>
+            )}
           </section>
         )}
 
@@ -1477,7 +1620,7 @@ export default function App() {
                 <>
                   <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 只剩三天，先救选择题相关模块。" /></label>
                   <div className="actions wrap">
-                    <button onClick={() => runMode("plan", "知识模块计划")} disabled={busy}><StackPlus size={18} weight="bold" />生成计划</button>
+                    <button onClick={() => runMode("plan", "知识模块计划")} disabled={busy}><StackPlus size={18} weight="bold" />{visibleModules.length ? "重新生成计划" : "生成计划"}</button>
                     {latestPlanNote && (
                       <button className="secondary" onClick={() => { setResultNote(latestPlanNote); setActiveTab("result"); }}>
                         <Sparkle size={18} weight="bold" />查看计划结果
@@ -1524,16 +1667,6 @@ export default function App() {
                     );
                   })}
                 </div>
-                <form className="panel module-form" onSubmit={saveModule}>
-                  <h2><PlusCircle size={20} weight="duotone" />手动补充模块</h2>
-                  <input value={moduleDraft.title} onChange={(event) => setModuleDraft({ ...moduleDraft, title: event.target.value })} placeholder="知识点名称，比如 进程、线程、死锁" />
-                  <select aria-label="难度" value={moduleDraft.difficulty} onChange={(event) => setModuleDraft({ ...moduleDraft, difficulty: event.target.value as ModuleDifficulty })}>
-                    <option value="low">难度低</option>
-                    <option value="medium">难度中</option>
-                    <option value="high">难度高</option>
-                  </select>
-                  <button type="submit"><CheckCircle size={18} weight="bold" />加入计划</button>
-                </form>
               </>
             ) : (
               <div className="daily-plan-list">
@@ -1574,96 +1707,334 @@ export default function App() {
         )}
 
         {activeTab === "mock" && (
+          <section className="app-section">
+            {!(activeMockAttempt && mockExamState !== "list") && (<div className="grid two">
+              <div className="panel">
+                <div className="panel-heading">
+                  <span className="heading-icon"><ClipboardText size={20} weight="duotone" /></span>
+                  <div>
+                    <h2>模拟考</h2>
+                    <p>{mockMode === "text" ? "生成完整文字版，题目和参考答案一起看。" : "想快速过题就看答案速览；想检验掌握情况，就AI答题，提交后由 AI 批改。"}</p>
+                  </div>
+                </div>
+                <div className="plan-mode-toggle">
+                  <button className={mockMode === "text" ? "tab active" : "tab"} onClick={() => setMockMode("text")}><Notebook size={16} weight="duotone" />答案速览</button>
+                  <button className={mockMode === "answer" ? "tab active" : "tab"} onClick={() => setMockMode("answer")}><PencilSimple size={16} weight="duotone" />AI答题</button>
+                </div>
+                <label>考试时长（分钟）
+                  <input type="number" min={5} max={180} value={mockDuration || ""} placeholder="输入分钟数，如 30" onChange={(event) => setMockDuration(Number(event.target.value))} />
+                </label>
+                <label>想生成什么题型<textarea value={mockQuestionTypes} onChange={(event) => setMockQuestionTypes(event.target.value)} placeholder="比如 选择题、简答题、计算题；不填就让 AI 自己安排。" /></label>
+                <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 题量少一点，重点考进程和文件管理。" /></label>
+                <div className="actions wrap">
+                  <button
+                    onClick={() => {
+                      if (!mockDuration || mockDuration < 5) return setStatus("先填考试时长（至少 5 分钟）。");
+                      runMode(
+                        "mock-exam",
+                        "模拟考",
+                        [
+                          `考试时长：${mockDuration} 分钟`,
+                          mockQuestionTypes.trim() ? `题型要求：${mockQuestionTypes.trim()}` : "",
+                          mockMode === "answer" ? "生成AI答题模式：题目和题目解析仍按规定输出，但前端会先隐藏解析。" : "",
+                          extra.trim()
+                        ].filter(Boolean).join("；")
+                      );
+                    }}
+                    disabled={busy}
+                  >
+                    <Timer size={18} weight="bold" />生成模拟考
+                  </button>
+                </div>
+              </div>
+              <div className="panel">
+                <div className="panel-heading">
+                  <span className="heading-icon"><Notebook size={20} weight="duotone" /></span>
+                  <div>
+                    <h2>已生成的模拟考</h2>
+                    <p>{scopedMocks.length ? "点标题可以重命名，点记录可以查看或继续作答。" : "生成后这里会自动留下记录。"}</p>
+                  </div>
+                </div>
+                <div className="list compact">
+                  {scopedMocks.map((item) => {
+                    const mockNote = scopedNotes.find((note) => note.id === item.source_note_id);
+                    const isEditing = editingMockId === item.id;
+                    return (
+                      <div key={item.id} className="item mock-record">
+                        <div className="mock-record-head">
+                          {isEditing ? (
+                            <input
+                              className="mock-rename-input"
+                              defaultValue={item.title}
+                              autoFocus
+                              onBlur={(event) => {
+                                renameMock(item.id, event.target.value);
+                                setEditingMockId("");
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  renameMock(item.id, event.currentTarget.value);
+                                  setEditingMockId("");
+                                }
+                                if (event.key === "Escape") setEditingMockId("");
+                              }}
+                            />
+                          ) : (
+                            <strong
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setEditingMockId(item.id);
+                              }}
+                              title="点击重命名"
+                            >
+                              {item.title}
+                            </strong>
+                          )}
+                        </div>
+                        <div className="mock-record-body" onClick={() => {
+                          if (!mockNote || isEditing) return;
+                          if (item.test_mode === "answer") {
+                            openMockForTaking(item, mockNote);
+                          } else {
+                            // 答案速览：inline preview with questions + answer key
+                            setActiveMockAttempt(item);
+                            setMockUserAnswers({});
+                            setMockScoringResult(null);
+                            setSelectedMockMistakes([]);
+                            setMockExamState("scored");
+                          }
+                        }}>
+                          <small>
+                            <span className={`kind-badge ${item.test_mode === "answer" ? "" : "muted"}`}>{item.test_mode === "answer" ? "AI答题" : "答案速览"}</span>
+                            {" "}{item.duration_minutes} 分钟 · {new Date(item.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                            {item.score ? ` · ${item.score}` : ""}
+                          </small>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {!scopedMocks.length && <p className="muted">生成模拟考后，这里会自动留下记录。</p>}
+                </div>
+              </div>
+            </div>)}
+
+            {activeMockAttempt && mockExamState !== "list" && activeMockNote && (
+              <div className="panel mock-taking">
+                <div className="result-head">
+                  <div>
+                    <span className="kind-badge">{mockExamState === "scored" ? (mockScoringResult ? "已批改" : "答案速览") : "答题中"}</span>
+                    <h2>{activeMockAttempt.title}</h2>
+                    <p className="muted">{mockExamState === "scored" ? (mockScoringResult ? "下面是批改结果和参考解析，可以把错题放进查漏补缺。" : "题目和参考答案一起看，快速过一遍。") : "参考答案先藏起来，写完后交给 AI 批改。"}</p>
+                  </div>
+                  <button className="secondary" onClick={() => {
+                    setActiveMockAttempt(null);
+                    setMockExamState("list");
+                    setMockScoringResult(null);
+                    setSelectedMockMistakes([]);
+                  }}><ArrowLeft size={18} weight="bold" />收起</button>
+                </div>
+
+                {activeMockPaper.questions.length ? activeMockPaper.questions.map((q, index) => (
+                  <div className="mock-question-block" key={`${activeMockAttempt.id}-${index}`}>
+                    <strong>{q.question}</strong>
+                    {q.type === "choice" && q.options ? (
+                      <div className="mock-choices">
+                        {q.options.map((opt) => {
+                          const letter = opt.match(/^([A-Ea-e])[.．、]/)?.[1]?.toUpperCase() || opt[0];
+                          const isSelected = (mockUserAnswers[String(index)] || "").toUpperCase() === letter;
+                          return (
+                            <label
+                              key={opt}
+                              className={`mock-choice-option${isSelected ? " selected" : ""}${mockExamState === "scored" ? " disabled" : ""}`}
+                            >
+                              <input
+                                type="radio"
+                                name={`q-${activeMockAttempt.id}-${index}`}
+                                value={letter}
+                                checked={isSelected}
+                                disabled={mockExamState === "scored"}
+                                onChange={() => setMockUserAnswers({ ...mockUserAnswers, [String(index)]: letter })}
+                              />
+                              <span>{opt}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <textarea
+                        value={mockUserAnswers[String(index)] || ""}
+                        disabled={mockExamState === "scored"}
+                        onChange={(event) => setMockUserAnswers({ ...mockUserAnswers, [String(index)]: event.target.value })}
+                        placeholder="把你的答案写在这里。"
+                      />
+                    )}
+                  </div>
+                )) : (
+                  <p className="muted">这份模拟考没有拆出题目，可以切回答案速览模式查看完整内容。</p>
+                )}
+
+                {mockExamState !== "scored" ? (
+                  <div className="actions wrap">
+                    <button onClick={submitMockAnswers} disabled={busy || !activeMockPaper.questions.length}><CheckCircle size={18} weight="bold" />提交并批改</button>
+                  </div>
+                ) : (
+                  <>
+                    {(mockScoringResult || activeMockAttempt.feedback) && (
+                      <div className="mock-scoring-result">
+                        <h3>AI 批改</h3>
+                        <RenderHumanText text={mockScoringResult || activeMockAttempt.feedback || ""} />
+                      </div>
+                    )}
+                    {!!mockMistakeCandidates.length && (
+                      <div className="mock-mistake-picker">
+                        <h3>选择要放进错题本的题</h3>
+                        <p className="muted">已自动勾选未全对的题目，可自行增减。</p>
+                        {mockMistakeCandidates.map((candidate) => (
+                          <label key={candidate.index} className="mock-mistake-option">
+                            <input
+                              type="checkbox"
+                              checked={selectedMockMistakes.includes(candidate.index)}
+                              onChange={(event) => {
+                                setSelectedMockMistakes(event.target.checked
+                                  ? [...selectedMockMistakes, candidate.index]
+                                  : selectedMockMistakes.filter((i) => i !== candidate.index));
+                              }}
+                            />
+                            <span>
+                              <span className={`kind-badge ${
+                                candidate.verdict === "wrong" ? "danger" :
+                                candidate.verdict === "partial" ? "warn" :
+                                candidate.verdict === "correct" ? "success" : ""
+                              }`}>
+                                {candidate.verdict === "wrong" ? "错误" :
+                                 candidate.verdict === "partial" ? "部分正确" :
+                                 candidate.verdict === "correct" ? "全对" : "未判定"}
+                              </span>
+                              {" "}{candidate.question.question}
+                            </span>
+                          </label>
+                        ))}
+                        <button onClick={saveSelectedMockMistakes} disabled={!selectedMockMistakes.length}><Notebook size={18} weight="bold" />放进查漏补缺</button>
+                      </div>
+                    )}
+                    {activeMockPaper.answerKey && (
+                      <div className="mock-answer-key">
+                        <h3>参考答案与解析</h3>
+                        <RenderHumanText text={activeMockPaper.answerKey} />
+                      </div>
+                    )}
+                    <div className="actions wrap">
+                      <button className="secondary" onClick={() => {
+                        setActiveMockAttempt(null);
+                        setMockExamState("list");
+                        setMockScoringResult(null);
+                        setSelectedMockMistakes([]);
+                      }}><ArrowLeft size={18} weight="bold" />收起</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "gap" && (
           <section className="grid two app-section">
             <div className="panel">
               <div className="panel-heading">
-                <span className="heading-icon"><ClipboardText size={20} weight="duotone" /></span>
+                <span className="heading-icon"><Target size={20} weight="duotone" /></span>
                 <div>
-                  <h2>模拟考</h2>
-                  <p>优先根据往年题/高频知识点预测试卷。</p>
+                  <h2>手动添加错题</h2>
+                  <p>你可以自己手动添加其他的错题到自己的错题本中</p>
                 </div>
               </div>
-              <label>考试时长（分钟）
-                <input type="number" min={5} max={180} value={mockDuration || ""} placeholder="输入分钟数，如 30" onChange={(event) => setMockDuration(Number(event.target.value))} />
-              </label>
-              <label>想生成什么题型<textarea value={mockQuestionTypes} onChange={(event) => setMockQuestionTypes(event.target.value)} placeholder="比如 选择题、简答题、计算题；不填就让 AI 自己安排。" /></label>
-              <label>补充要求<textarea value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="比如 题量少一点，重点考进程和文件管理。" /></label>
-              <div className="actions wrap">
-                <button
-                  onClick={() => {
-                    if (!mockDuration || mockDuration < 5) return setStatus("先填考试时长（至少 5 分钟）。");
-                    runMode(
-                      "mock-exam",
-                      "模拟考",
-                      [
-                        `考试时长：${mockDuration} 分钟`,
-                        mockQuestionTypes.trim() ? `题型要求：${mockQuestionTypes.trim()}` : "",
-                        extra.trim()
-                      ].filter(Boolean).join("；")
-                    );
-                  }}
-                  disabled={busy}
-                >
-                  <Timer size={18} weight="bold" />生成模拟考
-                </button>
-              </div>
+              <form className="mistake-form" onSubmit={saveMistake}>
+                <label>错题内容<textarea value={mistakeDraft.question} onChange={(event) => setMistakeDraft({ ...mistakeDraft, question: event.target.value })} placeholder="粘贴题目，或写一句自己错在哪里。" /></label>
+                <label>错因<textarea value={mistakeDraft.reason} onChange={(event) => setMistakeDraft({ ...mistakeDraft, reason: event.target.value })} placeholder="比如 概念混了、步骤漏了、公式记错。" /></label>
+                <label>正确思路<textarea value={mistakeDraft.fix} onChange={(event) => setMistakeDraft({ ...mistakeDraft, fix: event.target.value })} placeholder="写下下次怎么做对。" /></label>
+                <button type="submit"><Notebook size={18} weight="bold" />保存错题</button>
+              </form>
             </div>
+
             <div className="panel">
               <div className="panel-heading">
                 <span className="heading-icon"><Notebook size={20} weight="duotone" /></span>
                 <div>
-                  <h2>已生成的模拟考</h2>
-                  <p>{scopedMocks.length ? "点标题可以重命名，点记录可以查看。" : "生成后这里会自动留下记录。"}</p>
+                  <h2>错题本</h2>
+                  <p>{scopedMistakes.length ? `已经收进 ${scopedMistakes.length} 道错题。` : "还没有错题，模考批改后可以勾选加入。"}</p>
                 </div>
               </div>
+              <div className="plan-mode-toggle sub-nav">
+                <button className={mistakeFilter === "all" ? "tab active" : "tab"} onClick={() => setMistakeFilter("all")}>全部</button>
+                <button className={mistakeFilter === "new" ? "tab active" : "tab"} onClick={() => setMistakeFilter("new")}>未复盘</button>
+                <button className={mistakeFilter === "reviewed" ? "tab active" : "tab"} onClick={() => setMistakeFilter("reviewed")}>已复盘</button>
+              </div>
               <div className="list compact">
-                {scopedMocks.map((item, index) => {
-                  const mockNote = scopedNotes.find((note) => note.id === item.source_note_id);
-                  const isEditing = editingMockId === item.id;
+                {visibleMistakes.map((item) => {
+                  const isExpanded = expandedMistakeId === item.id;
+                  const isEditing = editingMistakeId === item.id;
                   return (
-                    <div key={item.id} className="item mock-record">
-                      <div className="mock-record-head">
-                        {isEditing ? (
-                          <input
-                            className="mock-rename-input"
-                            defaultValue={item.title}
-                            autoFocus
-                            onBlur={(event) => {
-                              renameMock(item.id, event.target.value);
-                              setEditingMockId("");
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") {
-                                renameMock(item.id, event.currentTarget.value);
-                                setEditingMockId("");
-                              }
-                              if (event.key === "Escape") setEditingMockId("");
-                            }}
-                          />
-                        ) : (
-                          <strong
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setEditingMockId(item.id);
-                            }}
-                            title="点击重命名"
-                          >
-                            {item.title}
-                          </strong>
-                        )}
+                    <article key={item.id} className="item mistake-row">
+                      <div className="item-head" onClick={() => setExpandedMistakeId(isExpanded ? "" : item.id)}>
+                        <strong>{item.question.slice(0, 70)}{item.question.length > 70 ? "..." : ""}</strong>
+                        <span className={`kind-badge ${item.status === "reviewed" ? "success" : ""}`}>{item.status === "reviewed" ? "已复盘" : "未复盘"}</span>
                       </div>
-                      <div className="mock-record-body" onClick={() => {
-                        if (mockNote && !isEditing) {
-                          setResultNote(mockNote);
-                          setActiveTab("result");
-                        }
-                      }}>
-                        <small>{item.duration_minutes} 分钟 · {new Date(item.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>
-                      </div>
-                    </div>
+                      {isExpanded && (
+                        <div className="mistake-detail">
+                          {isEditing ? (
+                            <>
+                              <label>错题内容<textarea value={mistakeDraft.question} onChange={(event) => setMistakeDraft({ ...mistakeDraft, question: event.target.value })} /></label>
+                              <label>错因<textarea value={mistakeDraft.reason} onChange={(event) => setMistakeDraft({ ...mistakeDraft, reason: event.target.value })} /></label>
+                              <label>正确思路<textarea value={mistakeDraft.fix} onChange={(event) => setMistakeDraft({ ...mistakeDraft, fix: event.target.value })} /></label>
+                              <div className="actions wrap">
+                                <button onClick={async () => {
+                                  await storage.saveMistake({
+                                    ...item,
+                                    question: mistakeDraft.question.trim() || item.question,
+                                    reason: mistakeDraft.reason.trim() || item.reason,
+                                    fix: mistakeDraft.fix.trim() || item.fix,
+                                    updated_at: nowIso()
+                                  });
+                                  setEditingMistakeId("");
+                                  setMistakeDraft(emptyMistake);
+                                  setStatus("错题已更新。");
+                                  await refresh();
+                                }}><CheckCircle size={18} weight="bold" />保存修改</button>
+                                <button className="secondary" onClick={() => {
+                                  setEditingMistakeId("");
+                                  setMistakeDraft(emptyMistake);
+                                }}><ArrowLeft size={18} weight="bold" />取消</button>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div><strong>题目</strong><p>{item.question}</p></div>
+                              <div><strong>错因</strong><p>{item.reason}</p></div>
+                              <div><strong>正确思路</strong><p>{item.fix}</p></div>
+                              <div className="actions wrap">
+                                <button className="secondary" onClick={async () => {
+                                  await storage.saveMistake({ ...item, status: item.status === "reviewed" ? "new" : "reviewed", updated_at: nowIso() });
+                                  setStatus(item.status === "reviewed" ? "已重新标为未复盘。" : "已标记为复盘过。");
+                                  await refresh();
+                                }}><CheckCircle size={18} weight="bold" />{item.status === "reviewed" ? "重新复盘" : "标记已复盘"}</button>
+                                <button className="secondary" onClick={() => {
+                                  setEditingMistakeId(item.id);
+                                  setMistakeDraft({ question: item.question, reason: item.reason, fix: item.fix });
+                                }}><PencilSimple size={18} weight="bold" />编辑</button>
+                                <button className="danger" onClick={async () => {
+                                  await storage.deleteMistake(item.id);
+                                  setStatus("错题已删除。");
+                                  await refresh();
+                                }}><Trash size={18} weight="bold" />删除</button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </article>
                   );
                 })}
-                {!scopedMocks.length && <p className="muted">生成模拟考后，这里会自动留下记录。</p>}
+                {!visibleMistakes.length && <p className="muted">这个筛选下还没有错题。</p>}
               </div>
             </div>
           </section>
@@ -1838,7 +2209,6 @@ export default function App() {
               <h2>{currentResultNote?.title || "AI 结果"}</h2>
               <RenderHumanText text={currentResultNote?.content || ""} />
               <div className="actions wrap">
-                {currentResultNote?.mode === "plan" && <button onClick={() => createModulesFromPlan(currentResultNote)}><Kanban size={18} weight="bold" />确认，拆成模块卡片</button>}
                 {currentResultNote?.mode === "practice" && <button onClick={() => {
                   setMistakeDraft({ question: currentResultNote.content.slice(0, 220), reason: "从模拟卷保存", fix: "按 AI 解析复盘" });
                   setActiveTab("review");
