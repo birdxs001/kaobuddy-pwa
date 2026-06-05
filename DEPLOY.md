@@ -4,132 +4,175 @@
 
 **当前部署目标：preview / staging（预览版），不是正式公开版。**
 
-本部署方案严格遵守以下原则：
-- ❌ **不做账号系统** — 无用户注册、无登录
-- ❌ **不做数据库** — 不引入任何数据库依赖
-- ❌ **不做云同步** — 用户数据仅保存在浏览器 IndexedDB
-- ❌ **不做付费系统** — 邀请码仅用于演示，不涉及真实付费
-- ✅ **保留 BYOK 模式** — 用户自己在浏览器里填写 AI API Key
-- ✅ **API Key 不落盘** — 后端仅做临时请求转发，不保存、不记日志、不在错误信息里完整回显
+- ❌ 不做账号系统
+- ❌ 不做数据库
+- ❌ 不做云同步
+- ❌ 不做付费系统
+- ✅ 保留 BYOK：用户自己填写 AI API Key
+- ✅ API Key 不落盘
 
 ---
 
-## Render 部署步骤
+## 方案一：Fly.io（推荐）
 
-### 1. 前置条件
-- GitHub 仓库已推送
-- Render 账号已注册（https://render.com）
+**费用**：新用户 $10/月免费额度，3 台 256MB VM + 3GB 存储。不超出免费额度不扣费。
 
-### 2. 创建 Web Service
+### 前置条件
 
-1. 登录 Render Dashboard
-2. 点击 **New +** → **Web Service**
-3. 连接 GitHub，选择 KaoBuddy 仓库
-4. 选择分支：`chore/cloud-preview-deploy`
+- 项目代码已推到 GitHub
+- 注册 Fly.io 账号：https://fly.io
 
-### 3. 配置参数
+### 第一步：安装 flyctl
 
-| 配置项 | 值 |
-|--------|-----|
-| **Runtime** | Python 3 |
-| **Build Command** | `pip install -r requirements.txt` |
-| **Start Command** | `uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT` |
+macOS：
+```bash
+brew install flyctl
+```
 
-> 注意：Render 的 Python 环境会自动读取 `.python-version` 文件选择 Python 3.11。
-> 前端已经预构建在 `backend/static/` 中，无需在 Render 上运行 `npm install` 或 `npm run build`。
+Windows：
+```bash
+powershell -c "iwr https://fly.io/install.ps1 -useb | iex"
+```
 
-### 4. 环境变量（Environment Variables）
+### 第二步：登录
 
-所有环境变量都是**可选的**。基础使用不需要任何环境变量。
+```bash
+fly auth login
+```
 
-| 变量名 | 说明 | 示例值 |
-|--------|------|--------|
-| `ALLOWED_ORIGINS` | CORS 允许的跨域来源（逗号分隔） | `https://xxx.onrender.com` |
-| `KAOBUDDY_AI_BASE_URL` | 邀请码模式 AI 接口地址 | `https://api.deepseek.com` |
-| `KAOBUDDY_AI_API_KEY` | 邀请码模式 AI Key | `sk-xxx` |
-| `KAOBUDDY_AI_MODEL` | 邀请码模式模型名 | `deepseek-chat` |
-| `KAOBUDDY_AI_INPUT_CNY_PER_MILLION` | 输入定价（元/百万token） | `2` |
-| `KAOBUDDY_AI_OUTPUT_CNY_PER_MILLION` | 输出定价（元/百万token） | `8` |
-| `KAOBUDDY_INVITE_STORE_PATH` | 邀请码数据文件路径 | `/opt/render/project/data/invites.json` |
-| `KAOBUDDY_INVITE_MAX_INPUT_CHARS` | 邀请码输入上限 | `80000` |
-| `KAOBUDDY_INVITE_MAX_TOKENS` | 邀请码输出上限 | `6000` |
+浏览器会打开 Fly.io 页面，用 GitHub 登录并授权。
 
-**预览版最低配置：留空所有环境变量即可。** 用户通过浏览器 UI 填写自己的 API Key。
+### 第三步：启动部署
 
-### 5. 部署后
+```bash
+cd /Users/Zhuanz/Documents/kaoBuddy
+fly launch
+```
 
-部署成功后，Render 会显示一个临时域名，格式如：
-`https://kaobuddy-xxxx.onrender.com`
+flyctl 会检测到已有的 `fly.toml`，问你是否使用现有配置：
+- 回答 `y`（使用现有配置）
+- 是否部署？回答 `y`
+
+### 第四步：等待部署
+
+```bash
+fly deploy
+```
+
+如果 `fly launch` 已经触发了部署，等待即可。部署完成后会显示：
+```
+Visit your app at: https://kaobuddy-preview.fly.dev
+```
+
+### 第五步：排查
+
+```bash
+fly logs        # 查看日志
+fly status      # 查看状态
+```
+
+### 如果不想安装 CLI
+
+直接将 GitHub 仓库导入 Fly.io：
+1. 打开 https://fly.io/dashboard
+2. 点击 **Import an Existing App**
+3. 连接 GitHub，选择 `jin-zi-xuan/kaobuddy-pwa`
+4. 分支选择 `chore/cloud-preview-deploy`
+5. Fly.io 自动检测 Dockerfile 并部署
 
 ---
 
-## Railway 部署步骤（备选）
+## 方案二：Cloudflare Tunnel（零成本即刻预览）
 
-### 1. 前置条件
-- GitHub 仓库已推送
-- Railway 账号已注册（https://railway.app）
+不需要注册任何云平台，不需要绑卡。从本机直接暴露一个公网临时 URL。
 
-### 2. 创建服务
+### 第一步：安装 cloudflared
 
-1. 登录 Railway Dashboard
-2. 点击 **New Project** → **Deploy from GitHub repo**
-3. 选择 KaoBuddy 仓库和分支 `chore/cloud-preview-deploy`
+macOS：
+```bash
+brew install cloudflare/cloudflare/cloudflared
+```
 
-### 3. 配置参数
+Windows：从 https://github.com/cloudflare/cloudflared/releases 下载。
 
-| 配置项 | 值 |
-|--------|-----|
-| **Build Command** | `pip install -r requirements.txt` |
-| **Start Command** | `uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT` |
+### 第二步：本地启动 KaoBuddy
 
-Railway 会自动检测 `.python-version` 选择 Python 版本。
+```bash
+cd /Users/Zhuanz/Documents/kaoBuddy
+source .venv/bin/activate
+uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
 
-### 4. 环境变量
+### 第三步：暴露公网
 
-与 Render 相同，见上方环境变量表。预览版最低配置留空即可。
+另开一个终端：
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+会显示：
+```
+Your quick tunnel has been created!
+https://xxx-xxx-xxx.trycloudflare.com
+```
+
+把 `https://xxx-xxx-xxx.trycloudflare.com` 发给别人就能打开。
+
+**代价**：你的电脑必须保持开机，KaoBuddy 才能被访问。
+
+---
+
+## 方案三：Railway（备选，$5 免费额度，需绑卡）
+
+见 `.railway.json`，Build Command:
+```
+pip install -r requirements.txt
+```
+Start Command:
+```
+uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+```
 
 ---
 
 ## 部署后测试清单
 
-部署成功后，逐项检查：
-
-- [ ] 首页能打开（`https://<域名>` 正常加载）
-- [ ] 手机浏览器能打开
+- [ ] 首页能打开
+- [ ] 手机能打开
+- [ ] 刷新不白屏
 - [ ] `/health` 返回 `{"ok":true}`
-- [ ] `/manifest.webmanifest` 正常返回 PWA 清单
-- [ ] `/sw.js` 正常返回 Service Worker
-- [ ] `/assets/` 下的 JS/CSS 文件不 404
-- [ ] 页面刷新不白屏、不 404
-- [ ] 浏览器 Console 没有红色错误
-- [ ] Network 面板里没有请求 `localhost` 或 `127.0.0.1`
-- [ ] 能创建第一个考试项目
-- [ ] 能填写自己的 AI API Key 并测试连接成功
-- [ ] 能上传 TXT 文件作为资料
-- [ ] 能生成一次知识模块计划
-- [ ] 能生成一次模拟考
-- [ ] 浏览器 IndexedDB 中有 `kaobuddy-db` 数据库
-- [ ] Render/Railway 日志中没有出现用户的 API Key（明文）
+- [ ] `/manifest.webmanifest` 能访问
+- [ ] `/sw.js` 能访问
+- [ ] `/assets/` 文件不 404
+- [ ] Network 无 `localhost` / `127.0.0.1`
+- [ ] Console 无严重红色错误
+- [ ] 能创建考试项目
+- [ ] 能填写 AI API Key
+- [ ] 能上传 TXT/PDF/DOCX
+- [ ] 能生成计划
+- [ ] 能生成模拟考
+- [ ] 日志无 `sk-`
 
 ---
 
-## 常见报错处理
+## 环境变量参考（全部可选）
+
+| 变量 | 用途 |
+|------|------|
+| `ALLOWED_ORIGINS` | CORS 跨域来源（逗号分隔），同源部署无需设置 |
+| `KAOBUDDY_AI_BASE_URL` | 邀请码模式 AI 地址 |
+| `KAOBUDDY_AI_API_KEY` | 邀请码模式 AI Key |
+| `KAOBUDDY_AI_MODEL` | 邀请码模式模型名 |
+
+**同源部署 + 用户自带 Key 模式下，以上全部留空即可。**
+
+---
+
+## 常见报错
 
 | 报错 | 原因 | 处理 |
 |------|------|------|
-| `python: command not found` | Runtime 选错 | 确认 Render 选了 Python 3 |
-| `ModuleNotFoundError: No module named 'backend'` | Start Command 路径不对 | 确认 `uvicorn backend.app.main:app` |
-| `Application failed to respond` | 端口绑定错误 | 确认用了 `--port $PORT`（不是 `--port 8000`） |
-| 前端 404 | 静态文件没构建 | 在本地先 `npm run build`，确保 `backend/static/` 有内容，再提交 |
-| `CORS error` | `ALLOWED_ORIGINS` 没配 | 同源部署一般不需要 CORS。如果跨域，添加 Render 域名到 `ALLOWED_ORIGINS` |
-| 页面空白 | SPA 路由 fallback 缺失 | 检查 catch-all 路由是否在 `main.py` 最后 |
-
----
-
-## API Key 安全注意事项
-
-1. **用户的 API Key 只存在浏览器 localStorage**，后端不持久化
-2. **后端只做临时转发**：收到请求 → 调用 AI API → 返回结果 → 丢弃 Key
-3. **日志中不能出现 API Key**：检查 `AiClientError` 的错误信息不完整回显 Key
-4. **邀请码模式的 server API Key** 通过环境变量注入，不写入代码、不提交到 Git
-5. 验证命令：部署后在 Render 日志里搜索 `sk-` 确认没有 Key 泄露
+| 首页 404 | 静态文件未构建 | 本地 `npm run build`，确认 `backend/static/` 有内容 |
+| assets 404 | hash 文件名不匹配 | 同上，确保 build 产物和 index.html 一致 |
+| 刷新白屏 | SPA fallback 缺失 | 检查 `main.py` 最后的 catch-all 路由 |
+| `backend` 导入失败 | 包路径问题 | Docker 内检查 `/app/backend/__init__.py` 存在 |
