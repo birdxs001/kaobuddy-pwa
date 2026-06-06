@@ -1,9 +1,18 @@
-import * as pdfjsLib from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import mammoth from "mammoth";
 import { extractLegacyDocText } from "./legacyDoc";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+// pdfjs-dist is ~2.2 MB — only load it when the user actually imports a PDF.
+let _pdfLib: typeof import("pdfjs-dist") | null = null;
+
+async function _getPdfLib() {
+  if (!_pdfLib) {
+    const pdfjsLib = await import("pdfjs-dist");
+    const workerMod = await import("pdfjs-dist/build/pdf.worker.mjs?url");
+    pdfjsLib.GlobalWorkerOptions.workerSrc = workerMod.default;
+    _pdfLib = pdfjsLib;
+  }
+  return _pdfLib;
+}
 
 export function readTextFile(file: File): Promise<string> {
   return file.text();
@@ -19,6 +28,7 @@ export function readAsDataUrl(file: File): Promise<string> {
 }
 
 export async function readPdfText(file: File): Promise<string> {
+  const pdfjsLib = await _getPdfLib();
   const data = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data }).promise;
   const pages: string[] = [];
@@ -63,6 +73,7 @@ export async function readDocumentText(file: File): Promise<string> {
 }
 
 export async function readPdfForAi(file: File): Promise<{ text: string; pageImages: string[]; pageCount: number }> {
+  const pdfjsLib = await _getPdfLib();
   const data = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data }).promise;
   const pages: string[] = [];

@@ -241,28 +241,25 @@ def _response_from_invite(content: str, invite_code: str, usage: dict[str, Any],
     return AiResponse(content=content, remaining=status.remaining, remaining_budget_cny=status.remaining_budget_cny)
 
 
-async def _chat_for_request(request: AiRequest | ChatCompletionRequest | DailyPlanRequest | HandwritingRequest, messages: list[ChatMessage], minimum_tokens: int | None = None) -> AiResponse:
-    prompt_chars = _messages_char_count(messages)
+def _resolve_auth(
+    request: AiRequest | ChatCompletionRequest | DailyPlanRequest | HandwritingRequest,
+    prompt_chars: int,
+    minimum_tokens: int | None = None,
+) -> tuple[Any, str | None]:
+    """Resolve API config + optional invite_code from a request.
 
+    Returns ``(api_config, invite_code | None)``.  Validates invite limits
+    (budget / size) before returning so every caller gets the same checks.
+    """
+    # --- BYOK path -----------------------------------------------------------
     if request.api_config:
         api_config = request.api_config
         if minimum_tokens and api_config.max_tokens < minimum_tokens:
             api_config = api_config.model_copy(update={"max_tokens": minimum_tokens})
-        model = api_config.model
-        provider = api_config.provider_name
-        with log_timing(log, "ai call",
-                        auth="custom",
-                        provider=provider,
-                        model=model,
-                        prompt_chars=prompt_chars,
-                        max_tokens=api_config.max_tokens):
-            try:
-                content = await chat_completion(api_config, messages)
-            except AiClientError as exc:
-                log.warning("ai call failed", auth="custom", provider=provider, model=model, error=str(exc)[:300])
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return AiResponse(content=content)
+        log.info("ai auth", auth="custom", provider=api_config.provider_name, model=api_config.model)
+        return api_config, None
 
+    # --- Invite path ---------------------------------------------------------
     invite_code = (request.invite_code or "").strip()
     if not invite_code:
         raise HTTPException(status_code=400, detail="请先填写邀请码，或切换到自带 API Key 模式。")
@@ -271,6 +268,7 @@ async def _chat_for_request(request: AiRequest | ChatCompletionRequest | DailyPl
     if prompt_chars > max_chars:
         log.info("request too large for invite", invite_code=redact(invite_code), prompt_chars=prompt_chars, max_chars=max_chars)
         raise HTTPException(status_code=413, detail="这次请求内容太长了，请缩短资料或切换到自带 API Key。")
+
     desired_tokens = minimum_tokens or 1800
     capped_tokens = min(max_tokens, max(128, desired_tokens))
     try:
@@ -278,9 +276,39 @@ async def _chat_for_request(request: AiRequest | ChatCompletionRequest | DailyPl
     except AiClientError as exc:
         log.warning("ai call failed", auth="invite", error=str(exc)[:300])
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    expected_cost = estimate_cost_cny(estimate_tokens_from_chars(prompt_chars), capped_tokens)
     try:
-        expected_cost = estimate_cost_cny(estimate_tokens_from_chars(prompt_chars), capped_tokens)
         ensure_invite_can_call(invite_code, expected_cost)
+    except InviteError as exc:
+        log.info("invite rejected", invite_code=redact(invite_code), error=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    log.info("ai auth", auth="invite", provider=api_config.provider_name, model=api_config.model)
+    return api_config, invite_code
+
+
+async def _chat_for_request(request: AiRequest | ChatCompletionRequest | DailyPlanRequest | HandwritingRequest, messages: list[ChatMessage], minimum_tokens: int | None = None) -> AiResponse:
+    prompt_chars = _messages_char_count(messages)
+    api_config, invite_code = _resolve_auth(request, prompt_chars, minimum_tokens)
+
+    if not invite_code:
+        with log_timing(log, "ai call",
+                        auth="custom",
+                        provider=api_config.provider_name,
+                        model=api_config.model,
+                        prompt_chars=prompt_chars,
+                        max_tokens=api_config.max_tokens):
+            try:
+                content = await chat_completion(api_config, messages)
+            except AiClientError as exc:
+                log.warning("ai call failed", auth="custom", provider=api_config.provider_name, model=api_config.model, error=str(exc)[:300])
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return AiResponse(content=content)
+
+    # Invite path
+    capped_tokens = api_config.max_tokens
+    try:
         with log_timing(log, "ai call",
                         auth="invite",
                         provider=api_config.provider_name,
@@ -289,9 +317,6 @@ async def _chat_for_request(request: AiRequest | ChatCompletionRequest | DailyPl
                         max_tokens=capped_tokens):
             content, usage = await chat_completion_with_usage(api_config, messages)
         return _response_from_invite(content, invite_code, usage, prompt_chars)
-    except InviteError as exc:
-        log.info("invite rejected", invite_code=redact(invite_code), error=str(exc))
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except AiClientError as exc:
         log.warning("ai call failed", auth="invite", model=api_config.model, error=str(exc)[:300])
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -535,24 +560,28 @@ async def generate_cards_stream(request: AiRequest):
         ChatMessage(role="user", content=user_content),
     ]
 
-    api_config = request.api_config
-    if not api_config:
-        try:
-            api_config = server_api_config(6000)
-        except AiClientError:
-            raise HTTPException(status_code=400, detail="请配置 API Key 后再试。")
+    prompt_chars = _messages_char_count(messages)
+    api_config, invite_code = _resolve_auth(request, prompt_chars, 6000)
 
-    log.info("cards stream start", model=api_config.model, prompt_chars=_messages_char_count(messages))
+    log.info("cards stream start", model=api_config.model, prompt_chars=prompt_chars)
 
     async def event_stream():
         chunk_count = 0
+        full_text = ""
         try:
             async for chunk in chat_completion_stream(api_config, messages):
                 chunk_count += 1
+                full_text += chunk
                 yield f"data: {json.dumps({'t': chunk})}\n\n"
             yield "data: [DONE]\n\n"
             duration_ms = round((time.monotonic() - t0) * 1000)
             log.info("cards stream done", model=api_config.model, chunks=chunk_count, duration_ms=duration_ms)
+            # Record invite usage for the stream call
+            if invite_code:
+                try:
+                    _response_from_invite(full_text, invite_code, {}, prompt_chars)
+                except Exception:
+                    pass
         except AiClientError as exc:
             duration_ms = round((time.monotonic() - t0) * 1000)
             log.warning("cards stream failed", model=api_config.model, error=str(exc)[:300], duration_ms=duration_ms)
