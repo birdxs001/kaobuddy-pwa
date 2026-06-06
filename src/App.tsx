@@ -29,6 +29,7 @@ import {
   statusTone, stripMarkdown, taskOrder, toProjectPayload,
   type ModuleStatus
 } from "./utils";
+import { buildAiAuthPayload, resolveEffectiveInviteState } from "./aiAuth";
 
 type ProjectTab = "overview" | "materials" | "plan" | "mock" | "gap" | "module" | "result" | "review";
 type SetupStep = "intro" | "flow" | "api" | "project";
@@ -288,16 +289,11 @@ export default function App() {
   const statusMessage = busy ? busyLabel : status;
   const statusClass = `status ${busy ? "loading" : statusTone(statusMessage)}`;
   function latestInviteState() {
-    const stored = storage.getInviteState();
-    if (stored.aiMode === "invite" && isInviteReady(stored)) return stored;
-    return inviteState;
+    return resolveEffectiveInviteState(inviteState, storage.getInviteState());
   }
 
   function getAuthPayload(): AiAuthPayload {
-    const currentInviteState = latestInviteState();
-    return currentInviteState.aiMode === "invite"
-      ? { inviteCode: currentInviteState.inviteCode.trim() }
-      : { api_config: apiConfig };
+    return buildAiAuthPayload(latestInviteState(), apiConfig);
   }
 
   function projectProgress(projectId: string) {
