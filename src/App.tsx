@@ -1,5 +1,5 @@
-import { FormEvent, useEffect, useMemo, useState, type CSSProperties, type DragEvent } from "react";
-import { AnimatePresence, motion, useMotionValue, useTransform } from "motion/react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowLeft, BookOpen, Brain, Cards, ChartDonut, CheckCircle, ClipboardText,
   ClockCountdown, DownloadSimple, FileArrowUp, GearSix, Kanban, Key,
@@ -157,6 +157,7 @@ export default function App() {
   const [cardLearningRound, setCardLearningRound] = useState(1);
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [isCardFlipped, setIsCardFlipped] = useState(false);
+  const cardDragLock = useRef(false);
   const [cardQueue, setCardQueue] = useState<LearnCard[]>([]);
   const [streamingCards, setStreamingCards] = useState<LearnCard[]>([]);
   const [isStreamingCards, setIsStreamingCards] = useState(false);
@@ -887,7 +888,8 @@ export default function App() {
           extra,
           `只讲解这个知识点：${moduleTitle}`,
           `它的考察内容：${module.exam_points || module.note || "请根据资料判断。"}`,
-          "输出给学生直接看的讲解，包含核心概念、常考方式、一个小例子和易错提醒。不要扩展成整章讲义。"
+          "输出给零基础学生直接看的详细讲解：先用生活类比建立直觉，再讲核心概念和符号含义，然后给解题步骤，最后用资料里的具体题目做例题演示并总结易错点。",
+          "如果考察内容里有独木桥、水果盘、生产者消费者等题目，它们是这个知识点的例题，不要当成新的知识点标题。"
         ].filter(Boolean).join("\n")
       });
       await storage.saveTask({
@@ -971,6 +973,20 @@ export default function App() {
     if (currentCardIndex > 0) {
       setCurrentCardIndex(currentCardIndex - 1);
     }
+  }
+
+  function handleCardTap(action: () => void) {
+    if (cardDragLock.current) return;
+    action();
+  }
+
+  function finishCardDrag(offsetX: number, velocityX: number) {
+    cardDragLock.current = Math.abs(offsetX) > 6 || Math.abs(velocityX) > 120;
+    window.setTimeout(() => {
+      cardDragLock.current = false;
+    }, 120);
+    if (offsetX < -64 || velocityX < -520) goToNextCard();
+    else if (offsetX > 64 || velocityX > 520) goToPrevCard();
   }
 
   function submitCardFeedback(quality: CardProgress) {
@@ -2184,15 +2200,18 @@ export default function App() {
                               key={card.id}
                               className={`ios-card${isCenter && isCardFlipped ? " flipped" : ""}`}
                               drag={isCenter ? "x" : false}
-                              dragSnapToOrigin
-                              dragElastic={0.15}
+                              dragConstraints={{ left: -140, right: 140 }}
+                              dragElastic={0.08}
+                              dragMomentum={false}
+                              onDragStart={isCenter ? () => { cardDragLock.current = true; } : undefined}
                               onDragEnd={isCenter ? (_event, info) => {
                                 const vx = info.velocity.x;
                                 const ox = info.offset.x;
-                                if (ox < -50 || vx < -400) goToNextCard();
-                                else if (ox > 50 || vx > 400) goToPrevCard();
+                                finishCardDrag(ox, vx);
                               } : undefined}
-                              onClick={isCenter ? toggleCard : () => setCurrentCardIndex(idx)}
+                              onClick={isCenter ? () => handleCardTap(toggleCard) : () => handleCardTap(() => setCurrentCardIndex(idx))}
+                              initial={{ opacity: 0, scale: 0.92, x: offset * 28 }}
+                              exit={{ opacity: 0, scale: 0.92, x: offset < 0 ? -96 : 96 }}
                               animate={{
                                 x: offset * 16,
                                 scale: isCenter ? 1 : 0.88,
@@ -2201,7 +2220,7 @@ export default function App() {
                                 zIndex: isCenter ? 3 : 1,
                                 filter: isCenter ? "blur(0px)" : "blur(1px)",
                               }}
-                              transition={{ type: "spring", stiffness: 330, damping: 28, mass: 0.7 }}
+                              transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.55 }}
                             >
                               <div className="swipe-card-inner">
                                 <div className="swipe-card-face front">
@@ -2220,7 +2239,7 @@ export default function App() {
                       </AnimatePresence>
                     </div>
 
-                    <p className="swipe-hint">← 左滑前一张 · 右滑下一张 →</p>
+                    <p className="swipe-hint">← 左滑下一张 · 右滑上一张 →</p>
 
                     <div className="card-feedback-buttons">
                       <button className="mini feedback-unknown" onClick={() => submitCardFeedback("unknown")}>还不会</button>

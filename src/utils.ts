@@ -375,12 +375,36 @@ export function extractExamPoints(text: string) {
   return extractField(text, ["考察内容", "考查内容", "考点内容", "考试内容", "会考什么", "重点"]);
 }
 
+function canonicalModuleTitle(title: string, context = "") {
+  const text = stripMarkdown(`${title} ${context}`).replace(/\s+/g, "");
+  if (/(P[,，、/]?V|PV|P、V|P，V|P,V)操作/.test(text) && /(独木桥|水果盘|生产者|消费者|同步|互斥|信号量|问题|实现)/.test(text)) {
+    return "信号量P、V操作";
+  }
+  const term = findKnowledgeTerm(text);
+  const isScenarioTitle = /例题|习题|真题|题型|应用题|场景题|问题|案例|实现|判断|计算|求解|证明|设计|分析/.test(text);
+  if (term && isScenarioTitle && stripMarkdown(title).replace(/\s+/g, "") !== term) {
+    return term;
+  }
+  return title;
+}
+
+function mergeModuleText(current: string | undefined, next: string | undefined) {
+  const parts = [current, next].map((item) => stripMarkdown(item || "").trim()).filter(Boolean);
+  return Array.from(new Set(parts)).join("；");
+}
+
 // ---------------------------------------------------------------------------
 // Module title extraction
 // ---------------------------------------------------------------------------
 
 const knowledgeTerms = [
   "操作系统引论",
+  "银行家算法",
+  "安全性算法",
+  "安全序列",
+  "死锁预防",
+  "死锁避免",
+  "死锁检测",
   "进程同步",
   "进程通信",
   "进程调度",
@@ -388,6 +412,9 @@ const knowledgeTerms = [
   "线程",
   "进程",
   "互斥",
+  "P、V操作",
+  "P,V操作",
+  "PV操作",
   "信号量",
   "管程",
   "死锁",
@@ -405,6 +432,13 @@ const knowledgeTerms = [
   "I/O"
 ];
 
+function findKnowledgeTerm(text: string) {
+  const cleaned = stripMarkdown(text).replace(/\s+/g, "");
+  return [...knowledgeTerms]
+    .sort((a, b) => b.length - a.length)
+    .find((item) => cleaned.includes(item.replace(/\s+/g, ""))) || "";
+}
+
 export function extractModuleTitle(line: string) {
   const cleaned = stripMarkdown(line)
     .replace(/预计(学习)?时间\s*[:：]?\s*\d+(\.\d+)?\s*(分钟|min|小时|h)/gi, "")
@@ -420,11 +454,11 @@ export function extractModuleTitle(line: string) {
     .replace(/^(模块|知识点|考点)\s*\d*\s*[:：]?\s*/i, "")
     .replace(/^(名称|标题)\s*[:：]?\s*/i, "")
     .replace(/\s+/g, "");
-  const term = knowledgeTerms.find((item) => cleaned.includes(item));
+  const term = findKnowledgeTerm(cleaned);
   if (!candidate) return term || "";
   if (candidate.length < 2 || candidate.length > 16) return term || "";
   if (/第\s*\d+\s*(天|章|页)|每天|天数|高频|聚焦|高效|综合|复习|练习|任务|计划|安排|资料|时间|完成|根据|模块$/.test(candidate)) return term || "";
-  return candidate;
+  return canonicalModuleTitle(candidate, cleaned);
 }
 
 export function isGenericModuleText(text: string) {
@@ -609,6 +643,35 @@ export function buildBalancedDailyPlan(
   );
 }
 
+function mergeParsedModules(modules: StudyTask[]) {
+  const byTitle = new Map<string, StudyTask>();
+  modules.forEach((module) => {
+    const key = moduleKey(module);
+    const existing = byTitle.get(key);
+    if (!existing) {
+      byTitle.set(key, module);
+      return;
+    }
+    byTitle.set(key, {
+      ...existing,
+      estimated_minutes: Math.max(existing.estimated_minutes, module.estimated_minutes),
+      difficulty: existing.difficulty === "high" || module.difficulty === "high" ? "high" : existing.difficulty,
+      importance_rank: Math.min(existing.importance_rank ?? 9999, module.importance_rank ?? 9999),
+      exam_points: mergeModuleText(existing.exam_points, module.exam_points || module.note),
+      source_title: mergeModuleText(existing.source_title, module.source_title),
+      source_section: mergeModuleText(existing.source_section, module.source_section),
+      evidence: mergeModuleText(existing.evidence, module.evidence),
+      note: mergeModuleText(existing.note, module.note),
+      updated_at: nowIso()
+    });
+  });
+  return Array.from(byTitle.values()).map((module, index) => ({
+    ...module,
+    order: module.order ?? index,
+    importance_rank: module.importance_rank && module.importance_rank < 9999 ? module.importance_rank : index + 1
+  }));
+}
+
 export function parseModulesFromPlan(content: string, projectId: string, noteId: string, existingCount: number, makeId: () => string): StudyTask[] {
   const jsonTexts = getJsonArrayTexts(content);
   if (jsonTexts.length) {
@@ -617,21 +680,23 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
         const parsed = JSON.parse(jsonText);
         return Array.isArray(parsed) ? parsed : [];
       });
-      const seen = new Set<string>();
-      return data.flatMap((item, index) => {
+      const modules = data.flatMap((item, index) => {
         if (!item || typeof item !== "object") return [];
         const record = item as Record<string, unknown>;
         const rawTitle = String(record.title || record.name || record.module || record.moduleName || "");
         const note = String(record.note || record.reason || record.description || record.practice || "");
-        const examPoints = String(record.exam_points || record.examPoints || record.points || record.content || record.test_points || note || "");
+        const examPoints = String(record.exam_points || record.examPoints || record.exampoints || record.points || record.content || record.test_points || record.testPoints || note || "");
         const sourceMaterialId = String(record.sourceMaterialId || record.source_material_id || record.materialId || record.material_id || "");
         const sourceTitle = String(record.sourceTitle || record.source_title || record.source || record.material || "");
         const sourceSection = String(record.sourceSection || record.source_section || record.section || record.page || "");
         const evidence = String(record.evidence || record.quote || record.sourceEvidence || record.source_evidence || "");
         const title = extractModuleTitle(rawTitle) || extractModuleTitle(note) || extractModuleTitle(examPoints);
         if (!title || isGenericModuleTitle(title) || isGenericModuleTitle(rawTitle)) return [];
-        if (!title || seen.has(title)) return [];
-        seen.add(title);
+        const normalizedRawTitle = stripMarkdown(rawTitle).replace(/\s+/g, "");
+        const normalizedTitle = stripMarkdown(title).replace(/\s+/g, "");
+        const mergedExamPoints = normalizedRawTitle && normalizedRawTitle !== normalizedTitle
+          ? mergeModuleText(examPoints, `例题：${rawTitle}`)
+          : examPoints;
         const rawMinutes = Number(record.estimatedminutes ?? record.estimated_minutes ?? record.estimatedMinutes ?? record.minutes);
         const rawRank = Number(record.importance_rank ?? record.importanceRank ?? record.importancerank ?? record.rank);
         const line = humanReadableAiText(JSON.stringify([record]));
@@ -646,7 +711,7 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
           priority: parsePriority(String(record.priority || "")),
           difficulty: parseDifficulty(String(record.difficulty || record.level || "")),
           importance_rank: Number.isFinite(rawRank) ? rawRank : existingCount + index + 1,
-          exam_points: stripMarkdown(examPoints),
+          exam_points: stripMarkdown(mergedExamPoints),
           order: existingCount + index,
           source_note_id: noteId,
           source_material_id: stripMarkdown(sourceMaterialId),
@@ -658,6 +723,7 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
           updated_at: nowIso()
         }] as StudyTask[];
       });
+      return mergeParsedModules(modules);
     } catch {
       // Fall back to line parsing below.
     }
@@ -668,11 +734,9 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
     .map((block) => block.trim())
     .filter((block) => /^模块\s*[:：]/.test(block));
   if (moduleBlocks.length) {
-    const seen = new Set<string>();
-    return moduleBlocks.flatMap((block, index) => {
+    const modules = moduleBlocks.flatMap((block, index) => {
       const title = extractModuleTitle(block);
-      if (!title || seen.has(title) || isGenericModuleTitle(title)) return [];
-      seen.add(title);
+      if (!title || isGenericModuleTitle(title)) return [];
       const minutesMatch = block.match(/(?:预计(?:完成|学习)?时间|预计时间)\s*[:：]?\s*(\d+)\s*(分钟|min)/i);
       const hourMatch = block.match(/(\d+(?:\.\d+)?)\s*(小时|h)/i);
       const estimatedMinutes = minutesMatch
@@ -707,6 +771,7 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
         updated_at: nowIso()
       }] as StudyTask[];
     });
+    return mergeParsedModules(modules);
   }
 
   const rawLines = content
@@ -717,11 +782,9 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
     .filter((line) => /模块名称|知识点名称|模块名|知识点|考点|主题|预计|分钟|小时/.test(line))
     .slice(0, 80);
   const lines = candidateLines.length ? candidateLines : rawLines.slice(0, 80);
-  const seen = new Set<string>();
-  return lines.flatMap((line, index) => {
+  const modules = lines.flatMap((line, index) => {
     const title = extractModuleTitle(line);
-    if (!title || seen.has(title) || isGenericModuleTitle(title) || isGenericModuleText(line)) return [];
-    seen.add(title);
+    if (!title || isGenericModuleTitle(title) || isGenericModuleText(line)) return [];
     const minutesMatch = line.match(/(?:预计(?:完成|学习)?时间\s*[:：]?\s*)?(\d+)\s*(分钟|min)/i);
     const hourMatch = line.match(/(\d+(?:\.\d+)?)\s*(小时|h)/i);
     const estimatedMinutes = minutesMatch
@@ -756,6 +819,7 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
       updated_at: nowIso()
     }] as StudyTask[];
   });
+  return mergeParsedModules(modules);
 }
 
 export function parseDailyPlan(content: string): DailyPlanItem[] {

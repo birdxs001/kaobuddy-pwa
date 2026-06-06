@@ -104,6 +104,74 @@ test("newly parsed knowledge modules stay unscheduled until daily plan is genera
   assert.equal(parsed[0]?.date, "");
 });
 
+test("P V operation example titles are merged into one semaphore module", () => {
+  const parsed = parseModulesFromPlan(
+    JSON.stringify([
+      {
+        title: "P,V操作实现独木桥问题",
+        estimated_minutes: 45,
+        difficulty: "高",
+        importance_rank: 1,
+        exam_points: "用 P、V 操作控制独木桥互斥通行。",
+        sourceTitle: "操作系统题库",
+        evidence: "资料给出独木桥同步互斥问题。"
+      },
+      {
+        title: "P,V操作实现水果盘问题",
+        estimated_minutes: 45,
+        difficulty: "高",
+        importance_rank: 2,
+        exam_points: "用 P、V 操作解决水果盘生产者消费者同步。",
+        sourceTitle: "操作系统题库",
+        evidence: "资料给出水果盘同步问题。"
+      }
+    ]),
+    project.id,
+    "note-plan",
+    0,
+    () => "module-pv"
+  );
+
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0]?.title, "信号量P、V操作");
+  assert.match(parsed[0]?.exam_points || "", /独木桥/);
+  assert.match(parsed[0]?.exam_points || "", /水果盘/);
+});
+
+test("example scenario titles are abstracted into their underlying knowledge point", () => {
+  const parsed = parseModulesFromPlan(
+    JSON.stringify([
+      {
+        title: "银行家算法判断安全状态问题",
+        estimated_minutes: 45,
+        difficulty: "高",
+        importance_rank: 1,
+        exam_points: "给出 Available、Max、Allocation，判断系统是否安全。",
+        sourceTitle: "操作系统题库",
+        evidence: "资料给出银行家算法安全性检查题。"
+      },
+      {
+        title: "银行家算法资源请求问题",
+        estimated_minutes: 45,
+        difficulty: "高",
+        importance_rank: 2,
+        exam_points: "判断某进程请求资源后是否可以分配。",
+        sourceTitle: "操作系统题库",
+        evidence: "资料给出银行家算法资源请求题。"
+      }
+    ]),
+    project.id,
+    "note-plan",
+    0,
+    () => "module-bank"
+  );
+
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0]?.title, "银行家算法");
+  assert.match(parsed[0]?.exam_points || "", /安全/);
+  assert.match(parsed[0]?.exam_points || "", /资源请求/);
+});
+
 test("learning button opens details for modules already in progress", () => {
   const todoModule = module("todo-module", 1);
   const doingModule = { ...module("doing-module", 1), module_status: "doing" as const };
