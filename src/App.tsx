@@ -24,9 +24,9 @@ import {
   isStudyModule,
   materialKindLabel, moduleKey, moduleOnlyBelongsToMaterial,
   learningButtonAction, moduleImportanceLabel, moduleSourceContext, moduleStatus, normalizeMinutes, nowIso,
-  buildBalancedDailyPlan, buildDailyPlanGroups, parseCardsFromAi, parseDailyPlan, parseDifficulty, parseMockQuestions,
+  buildBalancedDailyPlan, buildDailyPlanGroups, normalizeMockDuration, parseCardsFromAi, parseDailyPlan, parseDifficulty, parseMockQuestions,
   parseModulesFromPlan, parsePracticeQuestions, parsePriority,
-  statusTone, stripMarkdown, taskOrder, toProjectPayload,
+  parseRequestedMockDuration, statusTone, stripMarkdown, taskOrder, toProjectPayload,
   type ModuleStatus
 } from "./utils";
 import { buildAiAuthPayload, resolveEffectiveInviteState } from "./aiAuth";
@@ -589,7 +589,7 @@ export default function App() {
     }
   }
 
-  async function runMode(mode: "plan" | "teach" | "practice" | "mock-exam", title: string, extraOverride?: string) {
+  async function runMode(mode: "plan" | "teach" | "practice" | "mock-exam", title: string, extraOverride?: string, mockDurationOverride?: number) {
     if (!requireProject()) return;
     const generationGuard = getGenerationGuard({ mode, materialCount: scopedMaterials.length });
     if (generationGuard) {
@@ -619,8 +619,7 @@ export default function App() {
       await storage.saveNote(note);
       let mockAttempt: MockAttempt | null = null;
       if (mode === "mock-exam") {
-        const durationMatch = (extraOverride || extra || "").match(/考试时长[：:]?\s*(\d+)/);
-        const durationMinutes = durationMatch ? Number(durationMatch[1]) : 30;
+        const durationMinutes = mockDurationOverride ?? parseRequestedMockDuration(extraOverride || extra || "", 30);
         mockAttempt = {
           id: createId("mock"),
           project_id: activeProject!.id,
@@ -633,6 +632,7 @@ export default function App() {
           created_at: nowIso()
         };
         await storage.saveMockAttempt(mockAttempt);
+        setMockDuration(durationMinutes);
       }
       if (mode === "mock-exam" && mockMode === "answer" && mockAttempt) {
         setActiveMockAttempt(mockAttempt);
@@ -1515,7 +1515,8 @@ export default function App() {
                 const latest = scopedMocks[0];
                 if (!latest) return;
                 const note = scopedNotes.find((n) => n.id === latest.source_note_id);
-                if (note) { setResultNote(note); setActiveTab("result"); }
+                setActiveTab("mock");
+                openMockRecord(latest, note);
               }}
             >
               <span><Timer size={18} weight="duotone" />最近模考</span>
@@ -1748,15 +1749,17 @@ export default function App() {
                   <button
                     onClick={() => {
                       if (!mockDuration || mockDuration < 5) return setStatus("先填考试时长（至少 5 分钟）。");
+                      const requestedDuration = normalizeMockDuration(mockDuration);
                       runMode(
                         "mock-exam",
                         "模拟考",
                         [
-                          `考试时长：${mockDuration} 分钟`,
+                          `考试时长：${requestedDuration} 分钟`,
                           mockQuestionTypes.trim() ? `题型要求：${mockQuestionTypes.trim()}` : "",
                           mockMode === "answer" ? "生成AI答题模式：题目和题目解析仍按规定输出，但前端会先隐藏解析。" : "",
                           extra.trim()
-                        ].filter(Boolean).join("；")
+                        ].filter(Boolean).join("；"),
+                        requestedDuration
                       );
                     }}
                     disabled={busy}

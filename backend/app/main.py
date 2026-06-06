@@ -210,6 +210,24 @@ def _plan_material_chunks(request: AiRequest) -> list[str]:
     return chunks
 
 
+def _coverage_instruction(target_score: str | None) -> str:
+    raw_score = (target_score or "").strip()
+    try:
+        score = float(raw_score)
+    except ValueError:
+        score = 0
+    if score >= 90:
+        return (
+            "【覆盖率要求】\n"
+            "用户目标是 90 分以上，请按高覆盖率抽取知识点：资料里出现的章节标题、二级标题、定义、机制、算法、条件、步骤、优缺点、典型题型和易错点都要尽量拆出来。"
+            "不要只抽章节标题；如果一个章节下面有多个可考概念，要拆成多个模块，并用 evidence 标明依据。"
+        )
+    return (
+        "【覆盖率要求】\n"
+        "按资料里的明确知识点完整抽取，优先覆盖章节标题、定义、机制、算法、典型题型和易错点。"
+    )
+
+
 async def _run_plan(request: AiRequest) -> AiResponse:
     chunks = _plan_material_chunks(request)
     if not chunks:
@@ -223,10 +241,12 @@ async def _run_plan(request: AiRequest) -> AiResponse:
     plan_outputs: list[str] = []
     last_remaining: int | None = None
     last_remaining_budget_cny: float | None = None
+    coverage_instruction = _coverage_instruction(request.project.target_score)
     for index, chunk in enumerate(chunks, start=1):
         user_content = (
             "请从下面这一段导入资料中完整抽取知识点模块。考试时间和目标分数用于排序、估时和练习建议，但不要因为时间紧就漏掉本片段明确出现的知识点。不要补齐本片段没有依据的模块；如果需要补充背景，只能写在考察内容里的“补充理解”。\n\n"
             f"【考试项目】\n{format_project(request.project)}\n\n"
+            f"{coverage_instruction}\n\n"
             f"【资料】\n{chunk}\n\n"
             f"【补充要求】\n{request.extra or '无'}"
         )

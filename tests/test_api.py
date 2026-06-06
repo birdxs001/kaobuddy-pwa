@@ -182,6 +182,48 @@ def test_plan_processes_all_material_chunks(monkeypatch):
     assert "后续片段还没有进入 AI" not in response.json()["content"]
 
 
+def test_plan_prompt_raises_coverage_for_high_target_scores(monkeypatch):
+    captured_users = []
+
+    async def fake_chat_completion(api_config, messages):
+        captured_users.append(messages[1].content)
+        return "模块名称：文件目录；预计时间：45分钟；难度：中；重要排名：1；资料来源：操作系统教材；证据：资料列出文件目录；考察内容：文件目录结构；练习方式：做目录结构题"
+
+    monkeypatch.setattr("backend.app.main.chat_completion", fake_chat_completion)
+    response = client.post(
+        "/api/ai/plan",
+        json={
+            "api_config": {
+                "provider_name": "DeepSeek",
+                "base_url": "https://api.deepseek.com",
+                "api_key": "sk-test",
+                "model": "deepseek-chat",
+            },
+            "project": {
+                "subject": "操作系统",
+                "exam_date": "2026-06-30",
+                "daily_minutes": 120,
+                "target_score": "90",
+            },
+            "materials": [
+                {
+                    "id": "material_os",
+                    "title": "操作系统教材",
+                    "kind": "pdf",
+                    "content": "操作系统引论、进程管理、存储器管理、文件管理和设备管理。",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "目标分数：90" in captured_users[0]
+    assert "90 分以上" in captured_users[0]
+    assert "高覆盖率" in captured_users[0]
+    assert "二级标题" in captured_users[0]
+    assert "不要只抽章节标题" in captured_users[0]
+
+
 def test_module_practice_prompt_focuses_on_current_module(monkeypatch):
     captured = {}
 

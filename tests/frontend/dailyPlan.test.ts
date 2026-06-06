@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildBalancedDailyPlan, buildDailyPlanGroups, dailyPlanDates, learningButtonAction, moduleImportanceLabel, parseDailyPlan, readingTextBlocks } from "../../src/utils.ts";
+import { buildBalancedDailyPlan, buildDailyPlanGroups, dailyPlanDates, learningButtonAction, moduleImportanceLabel, parseDailyPlan, parseModulesFromPlan, readingTextBlocks } from "../../src/utils.ts";
 import type { StudyProject, StudyTask } from "../../src/types.ts";
 
 const project: StudyProject = {
@@ -80,6 +80,28 @@ test("daily plan groups do not put unscheduled modules into today", () => {
 
   assert.deepEqual(today?.items.map((item) => item.id), ["scheduled-today"]);
   assert.equal(groups.some((group) => group.items.some((item) => item.id === "not-yet-scheduled")), false);
+});
+
+test("newly parsed knowledge modules stay unscheduled until daily plan is generated", () => {
+  const parsed = parseModulesFromPlan(
+    JSON.stringify([
+      {
+        title: "进程同步",
+        estimated_minutes: 45,
+        difficulty: "高",
+        importance_rank: 1,
+        exam_points: "信号量、PV 操作、经典同步问题",
+        sourceTitle: "操作系统课件",
+        evidence: "资料中列出进程同步与信号量。"
+      }
+    ]),
+    project.id,
+    "note-plan",
+    0,
+    () => "module-sync"
+  );
+
+  assert.equal(parsed[0]?.date, "");
 });
 
 test("learning button opens details for modules already in progress", () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractMistakesFromGrading, parseMockQuestions } from "../../src/utils.ts";
+import { extractMistakesFromGrading, parseMockQuestions, parseRequestedMockDuration } from "../../src/utils.ts";
 
 test("parseMockQuestions splits visible questions from hidden answer key", () => {
   const parsed = parseMockQuestions(`【试题】
@@ -35,6 +35,10 @@ A. 进程管理 B. 内存管理 C. 文件管理 D. 数据库管理
     question: "1. 操作系统的主要功能不包括以下哪一项？",
     options: ["A. 进程管理", "B. 内存管理", "C. 文件管理", "D. 数据库管理"]
   });
+});
+
+test("parseRequestedMockDuration keeps the exact requested minutes with spaces", () => {
+  assert.equal(parseRequestedMockDuration("考试时长：90 分钟；题型要求：选择题", 30), 90);
 });
 
 test("extractMistakesFromGrading keeps only wrong or deducted questions", () => {

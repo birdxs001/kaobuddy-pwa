@@ -36,6 +36,16 @@ export function normalizeMinutes(value: number) {
   return Math.max(10, Math.min(480, Math.round(value)));
 }
 
+export function normalizeMockDuration(value: number, fallback = 30) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(5, Math.min(180, Math.round(value)));
+}
+
+export function parseRequestedMockDuration(text: string, fallback = 30) {
+  const match = text.match(/考试时长\s*[：:]?\s*(\d+)\s*(?:分钟|min)?/i);
+  return match ? normalizeMockDuration(Number(match[1]), fallback) : fallback;
+}
+
 export function dateRange(from: string, to: string): string[] {
   const result: string[] = [];
   const start = new Date(`${from}T00:00:00`);
@@ -629,7 +639,7 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
           id: makeId(),
           project_id: projectId,
           title,
-          date: dateKey(),
+          date: "",
           estimated_minutes: Number.isFinite(rawMinutes) ? normalizeMinutes(rawMinutes) : 45,
           status: "todo",
           module_status: "todo",
@@ -679,7 +689,7 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
         id: makeId(),
         project_id: projectId,
         title,
-        date: dateKey(),
+        date: "",
         estimated_minutes: estimatedMinutes,
         status: "todo",
         module_status: "todo",
@@ -705,8 +715,8 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
     .filter((line) => line.length >= 2);
   const candidateLines = rawLines
     .filter((line) => /模块名称|知识点名称|模块名|知识点|考点|主题|预计|分钟|小时/.test(line))
-    .slice(0, 36);
-  const lines = candidateLines.length ? candidateLines : rawLines.slice(0, 24);
+    .slice(0, 80);
+  const lines = candidateLines.length ? candidateLines : rawLines.slice(0, 80);
   const seen = new Set<string>();
   return lines.flatMap((line, index) => {
     const title = extractModuleTitle(line);
@@ -728,7 +738,7 @@ export function parseModulesFromPlan(content: string, projectId: string, noteId:
       id: makeId(),
       project_id: projectId,
       title,
-      date: dateKey(),
+      date: "",
       estimated_minutes: estimatedMinutes,
       status: "todo",
       module_status: "todo",
