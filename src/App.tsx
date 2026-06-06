@@ -24,7 +24,7 @@ import {
   isStudyModule,
   materialKindLabel, moduleKey, moduleOnlyBelongsToMaterial,
   learningButtonAction, moduleImportanceLabel, moduleSourceContext, moduleStatus, normalizeMinutes, nowIso,
-  buildBalancedDailyPlan, buildDailyPlanGroups, normalizeMockDuration, parseCardsFromAi, parseDailyPlan, parseDifficulty, parseMockQuestions,
+  buildBalancedDailyPlan, buildDailyPlanGroups, decideCardSwipe, normalizeMockDuration, parseCardsFromAi, parseDailyPlan, parseDifficulty, parseMockQuestions,
   parseModulesFromPlan, parsePracticeQuestions, parsePriority,
   parseRequestedMockDuration, statusTone, stripMarkdown, taskOrder, toProjectPayload,
   type ModuleStatus
@@ -985,8 +985,9 @@ export default function App() {
     window.setTimeout(() => {
       cardDragLock.current = false;
     }, 120);
-    if (offsetX < -64 || velocityX < -520) goToNextCard();
-    else if (offsetX > 64 || velocityX > 520) goToPrevCard();
+    const direction = decideCardSwipe(offsetX, velocityX, currentCardIndex + 1 < cardQueue.length, currentCardIndex > 0);
+    if (direction === "next") goToNextCard();
+    else if (direction === "prev") goToPrevCard();
   }
 
   function submitCardFeedback(quality: CardProgress) {
@@ -2200,8 +2201,8 @@ export default function App() {
                               key={card.id}
                               className={`ios-card${isCenter && isCardFlipped ? " flipped" : ""}`}
                               drag={isCenter ? "x" : false}
-                              dragConstraints={{ left: -140, right: 140 }}
-                              dragElastic={0.08}
+                              dragConstraints={{ left: -180, right: 180 }}
+                              dragElastic={0.12}
                               dragMomentum={false}
                               onDragStart={isCenter ? () => { cardDragLock.current = true; } : undefined}
                               onDragEnd={isCenter ? (_event, info) => {
@@ -2214,6 +2215,7 @@ export default function App() {
                               exit={{ opacity: 0, scale: 0.92, x: offset < 0 ? -96 : 96 }}
                               animate={{
                                 x: offset * 16,
+                                rotate: 0,
                                 scale: isCenter ? 1 : 0.88,
                                 y: isCenter ? 0 : Math.abs(offset) * 10,
                                 opacity: isCenter ? 1 : 0.45,

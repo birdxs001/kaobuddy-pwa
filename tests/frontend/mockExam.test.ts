@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractMistakesFromGrading, parseMockQuestions, parseRequestedMockDuration } from "../../src/utils.ts";
+import { decideCardSwipe, extractMistakesFromGrading, parseMockQuestions, parseRequestedMockDuration } from "../../src/utils.ts";
 
 test("parseMockQuestions splits visible questions from hidden answer key", () => {
   const parsed = parseMockQuestions(`【试题】
@@ -39,6 +39,18 @@ A. 进程管理 B. 内存管理 C. 文件管理 D. 数据库管理
 
 test("parseRequestedMockDuration keeps the exact requested minutes with spaces", () => {
   assert.equal(parseRequestedMockDuration("考试时长：90 分钟；题型要求：选择题", 30), 90);
+});
+
+test("decideCardSwipe changes card on modest but intentional swipe", () => {
+  assert.equal(decideCardSwipe(-34, -120, true, true), "next");
+  assert.equal(decideCardSwipe(-16, -300, true, true), "next");
+  assert.equal(decideCardSwipe(34, 120, true, true), "prev");
+  assert.equal(decideCardSwipe(16, 300, true, true), "prev");
+});
+
+test("decideCardSwipe respects card boundaries", () => {
+  assert.equal(decideCardSwipe(-80, -500, false, true), "stay");
+  assert.equal(decideCardSwipe(80, 500, true, false), "stay");
 });
 
 test("extractMistakesFromGrading keeps only wrong or deducted questions", () => {

@@ -46,6 +46,17 @@ export function parseRequestedMockDuration(text: string, fallback = 30) {
   return match ? normalizeMockDuration(Number(match[1]), fallback) : fallback;
 }
 
+export type CardSwipeDirection = "next" | "prev" | "stay";
+
+export function decideCardSwipe(offsetX: number, velocityX: number, canGoNext: boolean, canGoPrev: boolean): CardSwipeDirection {
+  const projectedX = offsetX + velocityX * 0.12;
+  const wantsNext = offsetX < -32 || velocityX < -240 || projectedX < -42;
+  const wantsPrev = offsetX > 32 || velocityX > 240 || projectedX > 42;
+  if (wantsNext && canGoNext) return "next";
+  if (wantsPrev && canGoPrev) return "prev";
+  return "stay";
+}
+
 export function dateRange(from: string, to: string): string[] {
   const result: string[] = [];
   const start = new Date(`${from}T00:00:00`);
