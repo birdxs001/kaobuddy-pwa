@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildBalancedDailyPlan, dailyPlanDates, learningButtonAction, moduleImportanceLabel, parseDailyPlan, readingTextBlocks } from "../../src/utils.ts";
+import { buildBalancedDailyPlan, buildDailyPlanGroups, dailyPlanDates, learningButtonAction, moduleImportanceLabel, parseDailyPlan, readingTextBlocks } from "../../src/utils.ts";
 import type { StudyProject, StudyTask } from "../../src/types.ts";
 
 const project: StudyProject = {
@@ -69,6 +69,17 @@ test("buildBalancedDailyPlan spreads high medium low importance across exam days
   assert.deepEqual(grouped.get("2026-06-05"), ["high-1", "mid-1", "low-1"]);
   assert.deepEqual(grouped.get("2026-06-06"), ["high-2", "mid-2", "low-2"]);
   assert.deepEqual(grouped.get("2026-06-07"), ["high-3", "mid-3", "low-3"]);
+});
+
+test("daily plan groups do not put unscheduled modules into today", () => {
+  const unscheduled = module("not-yet-scheduled", 1);
+  const scheduledToday = { ...module("scheduled-today", 2), date: "2026-06-05" };
+
+  const groups = buildDailyPlanGroups([unscheduled, scheduledToday], project, "2026-06-05");
+  const today = groups.find((group) => group.date === "2026-06-05");
+
+  assert.deepEqual(today?.items.map((item) => item.id), ["scheduled-today"]);
+  assert.equal(groups.some((group) => group.items.some((item) => item.id === "not-yet-scheduled")), false);
 });
 
 test("learning button opens details for modules already in progress", () => {

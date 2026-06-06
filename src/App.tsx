@@ -23,8 +23,8 @@ import {
   displayModuleTitle, extractModuleTitle, gradePerQuestion, humanReadableAiText,
   isStudyModule,
   materialKindLabel, moduleKey, moduleOnlyBelongsToMaterial,
-  learningButtonAction, moduleImportanceBucket, moduleImportanceLabel, moduleSourceContext, moduleStatus, normalizeMinutes, nowIso,
-  buildBalancedDailyPlan, dailyPlanDates, parseCardsFromAi, parseDailyPlan, parseDifficulty, parseMockQuestions,
+  learningButtonAction, moduleImportanceLabel, moduleSourceContext, moduleStatus, normalizeMinutes, nowIso,
+  buildBalancedDailyPlan, buildDailyPlanGroups, parseCardsFromAi, parseDailyPlan, parseDifficulty, parseMockQuestions,
   parseModulesFromPlan, parsePracticeQuestions, parsePriority,
   statusTone, stripMarkdown, taskOrder, toProjectPayload,
   type ModuleStatus
@@ -252,26 +252,9 @@ export default function App() {
     [visibleModules, todayKey]
   );
   const dailyPlanGroups = useMemo(() => {
-    const groups = new Map<string, StudyTask[]>();
-    const yesterdayKey = dateKey(new Date(new Date(`${todayKey}T00:00:00`).getTime() - 86400000));
-    const visibleDates = activeProject ? [yesterdayKey, ...dailyPlanDates(activeProject, todayKey)] : [yesterdayKey, todayKey];
-    visibleDates.forEach((date) => groups.set(date, []));
-    visibleModules.filter((item) => moduleStatus(item) !== "done").forEach((item) => {
-      const date = item.date || todayKey;
-      groups.set(date, [...(groups.get(date) || []), item]);
-    });
-    return Array.from(groups.entries())
-      .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
-      .map(([date, items]) => ({
-        date,
-        items: items.sort((a, b) => taskOrder(a, 0) - taskOrder(b, 0)),
-        importanceCounts: items.reduce((counts, item) => {
-          const bucket = moduleImportanceBucket(item, visibleModules);
-          counts[bucket] += 1;
-          return counts;
-        }, { high: 0, medium: 0, low: 0 })
-      }));
+    return buildDailyPlanGroups(visibleModules, activeProject, todayKey);
   }, [activeProject, visibleModules, todayKey]);
+  const hasDailyPlan = dailyPlanGroups.some((group) => group.items.length > 0);
   const selectedModule = selectedModuleId
     ? scopedModules.find((item) => item.id === selectedModuleId) || null
     : null;
@@ -1698,7 +1681,7 @@ export default function App() {
               </>
             ) : (
               <div className="daily-plan-list">
-                {dailyPlanGroups.length ? dailyPlanGroups.map((group) => {
+                {hasDailyPlan ? dailyPlanGroups.map((group) => {
                   const isToday = group.date === todayKey;
                   const isOverdue = group.date < todayKey;
                   return (

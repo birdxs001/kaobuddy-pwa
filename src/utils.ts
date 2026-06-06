@@ -486,6 +486,12 @@ export type DailyPlanItem = {
   reason?: string;
 };
 
+export type DailyPlanGroup = {
+  date: string;
+  items: StudyTask[];
+  importanceCounts: Record<ModulePriority, number>;
+};
+
 export function dailyPlanDates(project: Pick<StudyProject, "exam_date">, today = dateKey()) {
   const todayDate = new Date(`${today}T00:00:00`);
   const examDate = new Date(`${project.exam_date}T00:00:00`);
@@ -500,6 +506,36 @@ export function moduleImportanceBucket(module: StudyTask, sortedModules: StudyTa
   if (rank <= Math.ceil(total / 3)) return "high";
   if (rank <= Math.ceil((total * 2) / 3)) return "medium";
   return "low";
+}
+
+export function buildDailyPlanGroups(
+  modules: StudyTask[],
+  project: Pick<StudyProject, "exam_date"> | null,
+  today = dateKey()
+): DailyPlanGroup[] {
+  const groups = new Map<string, StudyTask[]>();
+  const yesterdayKey = dateKey(new Date(new Date(`${today}T00:00:00`).getTime() - 86400000));
+  const visibleDates = project ? [yesterdayKey, ...dailyPlanDates(project, today)] : [yesterdayKey, today];
+  visibleDates.forEach((date) => groups.set(date, []));
+
+  modules
+    .filter((item) => item.date && moduleStatus(item) !== "done")
+    .forEach((item) => {
+      if (!item.date) return;
+      groups.set(item.date, [...(groups.get(item.date) || []), item]);
+    });
+
+  return Array.from(groups.entries())
+    .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
+    .map(([date, items]) => ({
+      date,
+      items: items.sort((a, b) => taskOrder(a, 0) - taskOrder(b, 0)),
+      importanceCounts: items.reduce((counts, item) => {
+        const bucket = moduleImportanceBucket(item, modules);
+        counts[bucket] += 1;
+        return counts;
+      }, { high: 0, medium: 0, low: 0 } as Record<ModulePriority, number>)
+    }));
 }
 
 export function buildBalancedDailyPlan(
