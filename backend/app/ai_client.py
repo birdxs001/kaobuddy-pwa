@@ -23,7 +23,7 @@ def server_api_config(max_tokens: int = 1800, model: str | None = None) -> ApiCo
     api_key = (os.getenv("KAOBUDDY_AI_API_KEY") or "").strip()
     configured_model = (model or os.getenv("KAOBUDDY_AI_MODEL") or "").strip()
     if not base_url or not api_key or not configured_model:
-        raise AiClientError("服务器 AI 配置未完成，请联系管理员或使用自己的 API Key。")
+        raise AiClientError("邀请码已验证，但服务器 AI 还没配置好。请先切换到自带 API Key，或让管理员在 Railway 配置 KAOBUDDY_AI_BASE_URL、KAOBUDDY_AI_MODEL 和 KAOBUDDY_AI_API_KEY。")
     return ApiConfig(
         provider_name="KaoBuddy Invite",
         base_url=base_url,

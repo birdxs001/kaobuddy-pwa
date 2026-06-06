@@ -316,7 +316,7 @@ def test_invite_chat_missing_server_config_does_not_decrement(monkeypatch, tmp_p
     verify = client.post("/api/invite/verify", json={"code": "KAO-V1-DEMO-1"})
 
     assert response.status_code == 502
-    assert "服务器 AI 配置未完成" in response.json()["detail"]
+    assert "邀请码已验证，但服务器 AI 还没配置好" in response.json()["detail"]
     assert verify.json()["remaining"] == 50
     assert verify.json()["remainingBudgetCny"] == 10.0
 

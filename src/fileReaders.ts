@@ -1,6 +1,7 @@
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import mammoth from "mammoth";
+import { extractLegacyDocText } from "./legacyDoc";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -55,7 +56,8 @@ export async function readDocumentText(file: File): Promise<string> {
     return `RTF 正文\n${text}`;
   }
   if (lower.endsWith(".doc")) {
-    throw new Error("旧版 .doc 目前无法在浏览器里稳定解析，请另存为 .docx 或 PDF 后再上传。");
+    const text = extractLegacyDocText(await file.arrayBuffer());
+    return `旧版 Word 正文\n${text}`;
   }
   throw new Error("这个文档格式暂时不能解析，请换成 DOCX、PDF、TXT 或 Markdown。");
 }
