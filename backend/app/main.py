@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import json,os
+import json,os,time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .ai_client import (
     AiClientError,
@@ -20,6 +21,7 @@ from .ai_client import (
     server_api_config,
 )
 from .invites import InviteError, ensure_invite_can_call, invite_limits, record_invite_usage, verify_invite
+from .logging import get_logger, redact, set_request_id, log_timing
 from .prompts import (
     CARD_SYSTEM_PROMPT,
     DAILY_PLAN_SYSTEM_PROMPT,
@@ -53,6 +55,8 @@ from .schemas import (
 )
 from .video import import_video_metadata
 
+log = get_logger()
+
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATIC_DIR = ROOT_DIR / "backend" / "static"
@@ -75,6 +79,65 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Request ID + timing middleware
+# ---------------------------------------------------------------------------
+
+class _RequestTimingMiddleware(BaseHTTPMiddleware):
+    """Attach a request_id to every request and log method / path / status / ms."""
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        rid = set_request_id()
+        t0 = time.monotonic()
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = round((time.monotonic() - t0) * 1000)
+            log.warning(
+                "request unhandled",
+                method=request.method,
+                path=request.url.path,
+                status=500,
+                duration_ms=duration_ms,
+                request_id=rid,
+                exc=True,
+            )
+            raise
+        duration_ms = round((time.monotonic() - t0) * 1000)
+        level = "warning" if response.status_code >= 400 else "info"
+        getattr(log, level)(
+            "request",
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            duration_ms=duration_ms,
+            request_id=rid,
+        )
+        return response
+
+
+app.add_middleware(_RequestTimingMiddleware)
+
+
+# ---------------------------------------------------------------------------
+# Global exception handler — catches unhandled exceptions from routes
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> Response:
+    # Let HTTPExceptions pass through (they're already logged by the middleware)
+    if isinstance(exc, HTTPException):
+        raise exc
+    log.error(
+        "unhandled exception",
+        method=request.method,
+        path=request.url.path,
+        exc_info=exc,
+    )
+    raise exc
+
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 ASSETS_DIR = DIST_DIR / "assets" if (DIST_DIR / "assets").exists() else STATIC_DIR / "assets"
@@ -141,18 +204,38 @@ def _response_from_invite(content: str, invite_code: str, usage: dict[str, Any],
         completion_tokens = estimate_tokens_from_chars(len(content))
     cost = estimate_cost_cny(prompt_tokens, completion_tokens)
     status = record_invite_usage(invite_code, cost)
+    log.info(
+        "invite usage",
+        invite_code=redact(invite_code),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost_cny=cost,
+        remaining=status.remaining,
+        remaining_budget_cny=status.remaining_budget_cny,
+    )
     return AiResponse(content=content, remaining=status.remaining, remaining_budget_cny=status.remaining_budget_cny)
 
 
 async def _chat_for_request(request: AiRequest | ChatCompletionRequest | DailyPlanRequest | HandwritingRequest, messages: list[ChatMessage], minimum_tokens: int | None = None) -> AiResponse:
+    prompt_chars = _messages_char_count(messages)
+
     if request.api_config:
         api_config = request.api_config
         if minimum_tokens and api_config.max_tokens < minimum_tokens:
             api_config = api_config.model_copy(update={"max_tokens": minimum_tokens})
-        try:
-            content = await chat_completion(api_config, messages)
-        except AiClientError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        model = api_config.model
+        provider = api_config.provider_name
+        with log_timing(log, "ai call",
+                        auth="custom",
+                        provider=provider,
+                        model=model,
+                        prompt_chars=prompt_chars,
+                        max_tokens=api_config.max_tokens):
+            try:
+                content = await chat_completion(api_config, messages)
+            except AiClientError as exc:
+                log.warning("ai call failed", auth="custom", provider=provider, model=model, error=str(exc)[:300])
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
         return AiResponse(content=content)
 
     invite_code = (request.invite_code or "").strip()
@@ -160,20 +243,32 @@ async def _chat_for_request(request: AiRequest | ChatCompletionRequest | DailyPl
         raise HTTPException(status_code=400, detail="请先填写邀请码，或切换到自带 API Key 模式。")
 
     max_chars, max_tokens = invite_limits()
-    prompt_chars = _messages_char_count(messages)
     if prompt_chars > max_chars:
+        log.info("request too large for invite", invite_code=redact(invite_code), prompt_chars=prompt_chars, max_chars=max_chars)
         raise HTTPException(status_code=413, detail="这次请求内容太长了，请缩短资料或切换到自带 API Key。")
     desired_tokens = minimum_tokens or 1800
     capped_tokens = min(max_tokens, max(128, desired_tokens))
     try:
         api_config = server_api_config(max_tokens=capped_tokens)
+    except AiClientError as exc:
+        log.warning("ai call failed", auth="invite", error=str(exc)[:300])
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    try:
         expected_cost = estimate_cost_cny(estimate_tokens_from_chars(prompt_chars), capped_tokens)
         ensure_invite_can_call(invite_code, expected_cost)
-        content, usage = await chat_completion_with_usage(api_config, messages)
+        with log_timing(log, "ai call",
+                        auth="invite",
+                        provider=api_config.provider_name,
+                        model=api_config.model,
+                        prompt_chars=prompt_chars,
+                        max_tokens=capped_tokens):
+            content, usage = await chat_completion_with_usage(api_config, messages)
         return _response_from_invite(content, invite_code, usage, prompt_chars)
     except InviteError as exc:
+        log.info("invite rejected", invite_code=redact(invite_code), error=str(exc))
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except AiClientError as exc:
+        log.warning("ai call failed", auth="invite", model=api_config.model, error=str(exc)[:300])
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -231,6 +326,7 @@ def _coverage_instruction(target_score: str | None) -> str:
 async def _run_plan(request: AiRequest) -> AiResponse:
     chunks = _plan_material_chunks(request)
     if not chunks:
+        log.info("plan generation start", chunks=0, material_count=len(request.materials))
         return await _run_ai(
             request,
             PLAN_SYSTEM_PROMPT,
@@ -238,13 +334,15 @@ async def _run_plan(request: AiRequest) -> AiResponse:
             PLAN_MIN_TOKENS,
         )
 
+    log.info("plan generation start", chunks=len(chunks), material_count=len(request.materials))
     plan_outputs: list[str] = []
     last_remaining: int | None = None
     last_remaining_budget_cny: float | None = None
     coverage_instruction = _coverage_instruction(request.project.target_score)
     for index, chunk in enumerate(chunks, start=1):
+        log.info("plan chunk processing", chunk=index, total_chunks=len(chunks))
         user_content = (
-            "请从下面这一段导入资料中完整抽取知识点模块。考试时间和目标分数用于排序、估时和练习建议，但不要因为时间紧就漏掉本片段明确出现的知识点。不要补齐本片段没有依据的模块；如果需要补充背景，只能写在考察内容里的“补充理解”。\n\n"
+            '请从下面这一段导入资料中完整抽取知识点模块。考试时间和目标分数用于排序、估时和练习建议，但不要因为时间紧就漏掉本片段明确出现的知识点。不要补齐本片段没有依据的模块；如果需要补充背景，只能写在考察内容里的"补充理解"。\n\n'
             f"【考试项目】\n{format_project(request.project)}\n\n"
             f"{coverage_instruction}\n\n"
             f"【资料】\n{chunk}\n\n"
@@ -260,6 +358,7 @@ async def _run_plan(request: AiRequest) -> AiResponse:
         plan_outputs.append(f"资料片段 {index} 抽取结果\n{response.content}")
 
     prefix = f"长资料已分块处理：本次处理 {len(chunks)} 个资料片段。"
+    log.info("plan generation done", chunks=len(chunks))
     return AiResponse(
         content=f"{prefix}\n\n" + "\n\n".join(plan_outputs),
         remaining=last_remaining,
@@ -337,6 +436,13 @@ async def test_ai(request: ChatCompletionRequest) -> AiResponse:
 @app.post("/api/invite/verify", response_model=InviteVerifyResponse)
 async def verify_invite_code(request: InviteVerifyRequest) -> InviteVerifyResponse:
     status = verify_invite(request.code)
+    log.info(
+        "invite verify",
+        invite_code=redact(request.code),
+        valid=status.valid,
+        remaining=status.remaining,
+        remaining_budget_cny=status.remaining_budget_cny,
+    )
     return InviteVerifyResponse(
         valid=status.valid,
         remaining=status.remaining,
@@ -392,6 +498,7 @@ async def generate_cards(request: AiRequest) -> AiResponse:
 @app.post("/api/ai/cards/stream")
 async def generate_cards_stream(request: AiRequest):
     """Stream card generation via SSE."""
+    t0 = time.monotonic()
     user_content = (
         "请根据【补充要求】中指定的知识点和考察内容，生成 4~6 张学习卡片的 JSON 数组。\n\n"
         f"【考试项目】\n{format_project(request.project)}\n\n"
@@ -410,12 +517,20 @@ async def generate_cards_stream(request: AiRequest):
         except AiClientError:
             raise HTTPException(status_code=400, detail="请配置 API Key 后再试。")
 
+    log.info("cards stream start", model=api_config.model, prompt_chars=_messages_char_count(messages))
+
     async def event_stream():
+        chunk_count = 0
         try:
             async for chunk in chat_completion_stream(api_config, messages):
+                chunk_count += 1
                 yield f"data: {json.dumps({'t': chunk})}\n\n"
             yield "data: [DONE]\n\n"
+            duration_ms = round((time.monotonic() - t0) * 1000)
+            log.info("cards stream done", model=api_config.model, chunks=chunk_count, duration_ms=duration_ms)
         except AiClientError as exc:
+            duration_ms = round((time.monotonic() - t0) * 1000)
+            log.warning("cards stream failed", model=api_config.model, error=str(exc)[:300], duration_ms=duration_ms)
             yield f"data: {json.dumps({'e': str(exc)})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -527,8 +642,12 @@ async def handwriting_ocr(request: HandwritingRequest) -> AiResponse:
 @app.post("/api/video/import", response_model=VideoImportResponse)
 async def import_video(request: VideoImportRequest) -> VideoImportResponse:
     try:
-        return await import_video_metadata(str(request.url))
+        with log_timing(log, "video import", url=str(request.url)[:120]):
+            result = await import_video_metadata(str(request.url))
+        log.info("video import done", title=result.title, has_subtitles=bool(result.subtitles), warnings=len(result.warnings))
+        return result
     except Exception as exc:
+        log.warning("video import failed", url=str(request.url)[:120], error=str(exc)[:300])
         raise HTTPException(status_code=502, detail=f"视频信息读取失败：{exc}") from exc
 
 

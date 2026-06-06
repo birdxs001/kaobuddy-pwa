@@ -30,6 +30,7 @@ import {
   type ModuleStatus
 } from "./utils";
 import { buildAiAuthPayload, resolveEffectiveInviteState } from "./aiAuth";
+import { useCardLearning } from "./useCardLearning";
 
 type ProjectTab = "overview" | "materials" | "plan" | "mock" | "gap" | "module" | "result" | "review";
 type SetupStep = "intro" | "flow" | "api" | "project";
@@ -153,15 +154,14 @@ export default function App() {
   const [expandedMistakeId, setExpandedMistakeId] = useState("");
   const [editingMistakeId, setEditingMistakeId] = useState("");
   const [editingWeakPointId, setEditingWeakPointId] = useState("");
-  const [cardProgress, setCardProgress] = useState<Record<string, CardProgress>>({});
-  const [cardLearningRound, setCardLearningRound] = useState(1);
-  const [currentCardIndex, setCurrentCardIndex] = useState(0);
-  const [isCardFlipped, setIsCardFlipped] = useState(false);
-  const cardDragLock = useRef(false);
-  const [cardQueue, setCardQueue] = useState<LearnCard[]>([]);
-  const [streamingCards, setStreamingCards] = useState<LearnCard[]>([]);
-  const [isStreamingCards, setIsStreamingCards] = useState(false);
-  const [streamingAbort, setStreamingAbort] = useState<AbortController | null>(null);
+  const {
+    cardProgress, setCardProgress, cardLearningRound, setCardLearningRound,
+    currentCardIndex, setCurrentCardIndex, isCardFlipped, setIsCardFlipped,
+    cardDragLock, cardQueue, setCardQueue, streamingCards, isStreamingCards, streamingAbort,
+    setStreamingCards, setIsStreamingCards, setStreamingAbort,
+    resetCardProgress, markCard, goToNextCard, goToPrevCard, flipCard,
+    cancelStreaming, loadSavedCards, saveCardsToModule,
+  } = useCardLearning();
   const [showPracticeGrading, setShowPracticeGrading] = useState(false);
   const [practiceGradingNote, setPracticeGradingNote] = useState<AiNote | null>(null);
   const [practiceAnswers, setPracticeAnswers] = useState<Record<string, string>>({});
@@ -946,33 +946,12 @@ export default function App() {
     startCardLearning({ ...module, cards });
   }
 
-  function cancelCardStreaming() {
-    if (streamingAbort) { streamingAbort.abort(); setStreamingAbort(null); setIsStreamingCards(false); setStreamingCards([]); }
-  }
-
   function startCardLearning(module: StudyTask) {
     if (!module.cards?.length) return;
     const sorted = [...module.cards].sort((a, b) => (a.importance ?? 3) - (b.importance ?? 3));
-    setCardQueue(sorted); setCardProgress({}); setCardLearningRound(1);
-    setCurrentCardIndex(0); setIsCardFlipped(false);
+    resetCardProgress(sorted);
     setSelectedModuleId(module.id); setShowPracticeGrading(false); setPracticeGradingNote(null);
     setStatus("开始学习卡片，点击翻卡查看答案。");
-  }
-
-  function toggleCard() { setIsCardFlipped(prev => !prev); }
-
-  function goToNextCard() {
-    setIsCardFlipped(false);
-    if (currentCardIndex + 1 < cardQueue.length) {
-      setCurrentCardIndex(currentCardIndex + 1);
-    }
-  }
-
-  function goToPrevCard() {
-    setIsCardFlipped(false);
-    if (currentCardIndex > 0) {
-      setCurrentCardIndex(currentCardIndex - 1);
-    }
   }
 
   function handleCardTap(action: () => void) {
@@ -2178,7 +2157,7 @@ export default function App() {
                         {streamingCards.map((c) => (<span key={c.id} className="card-preview-chip" title={c.front}>{c.type === "concept" ? "概" : c.type === "mistake" ? "错" : c.type === "exam" ? "考" : "背"} {c.front.slice(0, 12)}…</span>))}
                       </div>
                     ) : <p className="muted">AI 正在生成卡片，请稍候...</p>}
-                    <button className="secondary" onClick={cancelCardStreaming}><ArrowLeft size={16} weight="bold" />取消生成</button>
+                    <button className="secondary" onClick={cancelStreaming}><ArrowLeft size={16} weight="bold" />取消生成</button>
                   </div>
                 ) : cardQueue.length > 0 ? (
                   <div className="detail-block card-learning-area">
@@ -2187,7 +2166,7 @@ export default function App() {
                       {cardQueue.map((c, i) => (<span key={c.id} className={`card-dot ${i < currentCardIndex ? (cardProgress[c.id] === "mastered" ? "dot-mastered" : cardProgress[c.id] === "uncertain" ? "dot-uncertain" : "dot-unknown") : i === currentCardIndex ? "dot-current" : "dot-pending"}`} />))}
                     </div>
 
-                    <p className="flip-hint" onClick={toggleCard}>点击翻转卡片</p>
+                    <p className="flip-hint" onClick={flipCard}>点击翻转卡片</p>
 
                     <div className="swipe-card-stage">
                       <AnimatePresence initial={false}>
@@ -2210,7 +2189,7 @@ export default function App() {
                                 const ox = info.offset.x;
                                 finishCardDrag(ox, vx);
                               } : undefined}
-                              onClick={isCenter ? () => handleCardTap(toggleCard) : () => handleCardTap(() => setCurrentCardIndex(idx))}
+                              onClick={isCenter ? () => handleCardTap(flipCard) : () => handleCardTap(() => setCurrentCardIndex(idx))}
                               initial={{ opacity: 0, scale: 0.92, x: offset * 28 }}
                               exit={{ opacity: 0, scale: 0.92, x: offset < 0 ? -96 : 96 }}
                               animate={{

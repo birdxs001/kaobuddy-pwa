@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json as _json
+import logging
 import os
 from typing import Any, Dict, List, Tuple
 
@@ -126,14 +128,16 @@ async def chat_completion_stream(api_config: ApiConfig, messages: List[ChatMessa
                         if data_str.strip() == "[DONE]":
                             break
                         try:
-                            import json as _json
                             chunk = _json.loads(data_str)
                             delta = chunk.get("choices", [{}])[0].get("delta", {})
                             content = delta.get("content", "")
                             if content:
                                 yield content
-                        except Exception:
-                            continue
+                        except (_json.JSONDecodeError, KeyError, IndexError, TypeError):
+                            # Malformed SSE chunk — log and skip, don't break the stream.
+                            logging.getLogger("kaobuddy").warning(
+                                "stream chunk parse failed", raw=data_str[:200]
+                            )
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text[:400]
         raise AiClientError(f"AI 服务返回错误：{exc.response.status_code} {detail}") from exc

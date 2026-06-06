@@ -14,11 +14,27 @@ function ensureStore(db: IDBDatabase, name: StoreName, indexes: string[] = []) {
   indexes.forEach((index) => store.createIndex(index, index));
 }
 
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const db = request.result;
+function ensureIndex(db: IDBDatabase, storeName: StoreName, indexName: string, keyPath?: string) {
+  try {
+    const store = db.transaction(storeName, "versionchange" as never).objectStore(storeName) as unknown as IDBObjectStore;
+    if (!store.indexNames.contains(indexName)) {
+      store.createIndex(indexName, keyPath || indexName);
+    }
+  } catch {
+    // Transaction may fail if the store was just created — the index was
+    // already set up by ensureStore above.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Schema migrations — add new entries when bumping DB_VERSION.
+// Each migration runs exactly once: when oldVersion < migration.version.
+// ---------------------------------------------------------------------------
+
+const MIGRATIONS: Array<{ version: number; upgrade: (db: IDBDatabase) => void }> = [
+  {
+    version: 1,
+    upgrade(db) {
       ensureStore(db, "projects");
       ensureStore(db, "materials", ["project_id"]);
       ensureStore(db, "notes", ["project_id"]);
@@ -26,6 +42,31 @@ function openDb(): Promise<IDBDatabase> {
       ensureStore(db, "mistakes", ["project_id"]);
       ensureStore(db, "weak_points", ["project_id"]);
       ensureStore(db, "mock_attempts", ["project_id"]);
+    },
+  },
+  // Example for future use:
+  // {
+  //   version: 2,
+  //   upgrade(db) {
+  //     ensureStore(db, "settings");
+  //     ensureIndex(db, "tasks", "updated_at", "updated_at");
+  //   },
+  // },
+];
+
+function runMigrations(db: IDBDatabase, oldVersion: number) {
+  for (const migration of MIGRATIONS) {
+    if (migration.version > oldVersion && migration.version <= DB_VERSION) {
+      migration.upgrade(db);
+    }
+  }
+}
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (event: IDBVersionChangeEvent) => {
+      runMigrations(request.result, event.oldVersion);
     };
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve(request.result);
