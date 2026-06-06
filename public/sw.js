@@ -1,7 +1,7 @@
 // kaobuddy service worker
 // Strategy: network-first for everything, cache for offline fallback
-// Each build gets its own cache via timestamp to force clean slate
-const CACHE_VERSION = "kaobuddy-v15";
+// __BUILD_TS__ is replaced by vite at build time so every deploy busts the cache (both comment and CACHE_VERSION).
+const CACHE_VERSION = "kaobuddy-__BUILD_TS__";
 const SHELL = ["/", "/manifest.webmanifest", "/icons/icon.svg"];
 
 // Listen for skip-waiting message from the page

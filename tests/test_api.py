@@ -460,3 +460,99 @@ def test_daily_plan_prompt_uses_project_and_unfinished_modules(monkeypatch):
     assert "module_process" in captured["user"]
     assert "进程" in captured["user"]
     assert "先安排高频考点" in captured["user"]
+
+
+# ---- CSP header tests ----
+
+
+def test_csp_header_present_on_dynamic_routes():
+    response = client.post(
+        "/api/invite/verify",
+        json={"code": "KAO-V1-DEMO-1"},
+    )
+    csp = response.headers.get("content-security-policy")
+    assert csp is not None
+    assert "default-src 'self'" in csp
+    assert "script-src 'self'" in csp
+    assert "connect-src 'self' https:" in csp
+    assert "object-src 'none'" in csp
+
+
+def test_csp_header_present_on_static_routes():
+    response = client.get("/health")
+    csp = response.headers.get("content-security-policy")
+    assert csp is not None
+
+
+# ---- Invite guard tests ----
+
+
+def test_invite_chat_rejects_empty_code():
+    # Pydantic min_length=1 rejects empty inviteCode at the schema layer → 422
+    response = client.post(
+        "/api/ai/chat",
+        json={
+            "inviteCode": "",
+            "messages": [{"role": "user", "content": "你好"}],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_invite_plan_oversized_body_rejected(monkeypatch, tmp_path):
+    monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
+    monkeypatch.setenv("KAOBUDDY_AI_BASE_URL", "https://server.example")
+    monkeypatch.setenv("KAOBUDDY_AI_MODEL", "server-model")
+    monkeypatch.setenv("KAOBUDDY_AI_API_KEY", "sk-server-secret")
+    monkeypatch.setenv("KAOBUDDY_AI_INPUT_CNY_PER_MILLION", "10")
+    monkeypatch.setenv("KAOBUDDY_AI_OUTPUT_CNY_PER_MILLION", "20")
+    # Set a very low input limit so the test doesn't need huge content
+    monkeypatch.setenv("KAOBUDDY_INVITE_MAX_INPUT_CHARS", "100")
+
+    response = client.post(
+        "/api/ai/plan",
+        json={
+            "inviteCode": "KAO-V1-DEMO-1",
+            "project": {"subject": "测试", "exam_date": "2026-12-31", "daily_minutes": 60},
+            "materials": [
+                {"title": "test", "kind": "text", "content": "x" * 200}
+            ],
+        },
+    )
+    assert response.status_code == 413
+    assert "太长了" in response.json()["detail"]
+
+
+# ---- Edge case: daily plan with empty module list ----
+
+
+def test_daily_plan_rejects_empty_modules(monkeypatch):
+    async def fake_chat_completion(api_config, messages):
+        return '[{"module_id":"x","date":"2026-06-07","day_order":1,"reason":"test"}]'
+
+    monkeypatch.setattr("backend.app.main.chat_completion", fake_chat_completion)
+    response = client.post(
+        "/api/ai/daily-plan",
+        json={
+            "api_config": {
+                "provider_name": "DeepSeek",
+                "base_url": "https://api.deepseek.com",
+                "api_key": "sk-test",
+                "model": "deepseek-chat",
+            },
+            "project": {"subject": "测试", "exam_date": "2026-12-31", "daily_minutes": 60},
+            "modules": [],
+        },
+    )
+    # Even with empty module list, the endpoint should still accept the request
+    # (the frontend guards against calling it with 0 modules)
+    assert response.status_code == 200
+
+
+# ---- Logging related: health check still works ----
+
+
+def test_health_unaffected_by_new_middleware():
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}

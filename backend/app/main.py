@@ -122,6 +122,31 @@ app.add_middleware(_RequestTimingMiddleware)
 
 
 # ---------------------------------------------------------------------------
+# CSP middleware — protect against XSS
+# ---------------------------------------------------------------------------
+
+class _CspMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "img-src 'self' data: https:; "
+            "connect-src 'self' https:; "
+            "media-src 'none'; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+        return response
+
+
+app.add_middleware(_CspMiddleware)
+
+
+# ---------------------------------------------------------------------------
 # Global exception handler — catches unhandled exceptions from routes
 # ---------------------------------------------------------------------------
 
