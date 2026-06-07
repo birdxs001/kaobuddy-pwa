@@ -6,6 +6,8 @@ __pycache__/
 .pytest_cache/
 node_modules/
 dist/
+.agents/
+.github/skills/
 backend/static/assets/
 work/
 outputs/
