@@ -4,6 +4,10 @@
 
 你把课件、教材、笔记、PDF、手写照片、视频字幕扔进来，剩下的交给 AI——拆知识点、讲重点、出题、批改、生成模拟考、临考速背卡片。自己带 API Key，数据全在浏览器里，不搞账号那一套。
 
+> 🚀 **在线预览**：[kaobuddy-preview-production.up.railway.app](https://kaobuddy-preview-production.up.railway.app/)
+> 
+> 打开即用，不用装任何东西。手机电脑都能访问。
+
 ---
 
 ## 它解决什么问题
@@ -133,7 +137,11 @@
 
 ### 已经部署好了（推荐）
 
-打开链接直接用。考搭子跑在 Railway 上，手机电脑都能访问。
+打开即用，啥都不用装：
+
+> **[kaobuddy-preview-production.up.railway.app](https://kaobuddy-preview-production.up.railway.app/)**
+
+考搭子跑在 Railway 上，手机电脑都能访问。
 
 ### 自己电脑上跑
 
