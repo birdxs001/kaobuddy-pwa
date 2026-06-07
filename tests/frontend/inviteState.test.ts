@@ -6,16 +6,18 @@ import {
   updateInviteCodeDraft
 } from "../../src/inviteState.ts";
 
+const restoredInviteCode = "TEST_ONLY_INVITE_OK";
+
 test("restores verified invite state from older storage without aiMode", () => {
   const state = normalizeInviteState({
-    inviteCode: "KAO-OK",
+    inviteCode: restoredInviteCode,
     remaining: 3,
     remainingBudgetCny: 1.2,
     validatedAt: "2026-06-04T10:00:00.000Z"
   });
 
   assert.equal(state.aiMode, "invite");
-  assert.equal(state.inviteCode, "KAO-OK");
+  assert.equal(state.inviteCode, restoredInviteCode);
   assert.equal(state.validatedAt, "2026-06-04T10:00:00.000Z");
 });
 

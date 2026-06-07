@@ -14,7 +14,18 @@ DEFAULT_INVITE_STORE = ROOT_DIR / "work" / "invites.json"
 MAX_INVITE_USES = 50
 MAX_INVITE_BUDGET_CNY = 10.0
 DEFAULT_EXPIRES_AT = "2026-12-31"
-DEFAULT_CODES = ["KAO-V1-DEMO-1", "KAO-V1-DEMO-2", "KAO-V1-DEMO-3"]
+
+
+def _invite_codes_from_env() -> list[str]:
+    """Read invite codes from KAOBUDDY_INVITE_CODES (comma-separated).
+
+    No default codes — every deployment must explicitly configure its own
+    codes via environment variables.  This keeps codes out of source control.
+    """
+    raw = (os.getenv("KAOBUDDY_INVITE_CODES") or "").strip()
+    if not raw:
+        return []
+    return [code.strip() for code in raw.split(",") if code.strip()]
 
 
 class InviteError(RuntimeError):
@@ -45,7 +56,7 @@ def default_store() -> Dict[str, List[Dict[str, Any]]]:
                 "enabled": True,
                 "expiresAt": DEFAULT_EXPIRES_AT,
             }
-            for code in DEFAULT_CODES
+            for code in _invite_codes_from_env()
         ]
     }
 

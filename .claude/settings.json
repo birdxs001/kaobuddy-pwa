@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "lsof -ti:8000 | xargs kill -9 2>/dev/null; sleep 1; cd /Users/Zhuanz/Documents/kaoBuddy && nohup python3 -m uvicorn backend.app.main:app --reload --port 8000 > /tmp/kaobuddy-backend.log 2>&1 &"
+            "command": "lsof -ti:8000 | xargs kill -9 2>/dev/null; cd /Users/Zhuanz/Documents/kaoBuddy && nohup python3 -m uvicorn backend.app.main:app --port 8000 > /tmp/kaobuddy-backend.log 2>&1 &"
           }
         ]
       }
