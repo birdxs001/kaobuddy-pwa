@@ -4,10 +4,12 @@ import { buildAiAuthPayload, resolveEffectiveInviteState } from "../../src/aiAut
 import { normalizeInviteState } from "../../src/inviteState.ts";
 import type { ApiConfig } from "../../src/types.ts";
 
+const testInviteCode = "TEST_ONLY_INVITE_OLD";
+
 const apiConfig: ApiConfig = {
   provider_name: "DeepSeek",
   base_url: "https://api.deepseek.com",
-  api_key: "sk-test",
+  api_key: "TEST_ONLY_API_KEY",
   model: "deepseek-chat",
   temperature: 0.4,
   max_tokens: 1800
@@ -17,7 +19,7 @@ test("custom API mode is not overwritten by an older verified invite in storage"
   const current = normalizeInviteState({ aiMode: "custom" });
   const stored = normalizeInviteState({
     aiMode: "invite",
-    inviteCode: "KAO-OLD",
+    inviteCode: testInviteCode,
     remaining: 3,
     remainingBudgetCny: 1.2,
     validatedAt: "2026-06-04T10:00:00.000Z"
@@ -30,10 +32,10 @@ test("custom API mode is not overwritten by an older verified invite in storage"
 });
 
 test("invite mode can still restore a verified invite from storage", () => {
-  const current = normalizeInviteState({ aiMode: "invite", inviteCode: "KAO-OLD" });
+  const current = normalizeInviteState({ aiMode: "invite", inviteCode: testInviteCode });
   const stored = normalizeInviteState({
     aiMode: "invite",
-    inviteCode: "KAO-OLD",
+    inviteCode: testInviteCode,
     remaining: 3,
     remainingBudgetCny: 1.2,
     validatedAt: "2026-06-04T10:00:00.000Z"
@@ -42,5 +44,5 @@ test("invite mode can still restore a verified invite from storage", () => {
   const resolved = resolveEffectiveInviteState(current, stored);
 
   assert.equal(resolved.aiMode, "invite");
-  assert.deepEqual(buildAiAuthPayload(resolved, apiConfig), { inviteCode: "KAO-OLD" });
+  assert.deepEqual(buildAiAuthPayload(resolved, apiConfig), { inviteCode: testInviteCode });
 });

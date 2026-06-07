@@ -9,6 +9,37 @@ from backend.app.schemas import ApiConfig
 
 client = TestClient(app)
 
+TEST_API_KEY = "TEST_ONLY_API_KEY"
+SERVER_API_KEY = "TEST_ONLY_SERVER_API_KEY"
+
+
+def _test_invite_code(suffix: str = "1") -> str:
+    return f"TEST_ONLY_INVITE_{suffix}"
+
+
+def _set_test_invite_codes(monkeypatch, *suffixes: str) -> None:
+    monkeypatch.setenv("KAOBUDDY_INVITE_CODES", ",".join(_test_invite_code(suffix) for suffix in suffixes))
+
+
+def test_no_legacy_demo_invite_codes_checked_in():
+    legacy_prefix = "-".join(("KAO", "V1", "DEMO"))
+    ignored_dirs = {".git", ".pytest_cache", ".venv", "node_modules", "backend/static/assets", "dist", "work"}
+    offenders: list[str] = []
+
+    for path in Path(".").rglob("*"):
+        if not path.is_file():
+            continue
+        if any(ignored in path.parts for ignored in ignored_dirs):
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if legacy_prefix in content:
+            offenders.append(str(path))
+
+    assert offenders == []
+
 
 def test_health():
     response = client.get("/health")
@@ -21,7 +52,7 @@ def test_api_config_requires_http_base_url():
         ApiConfig(
             provider_name="DeepSeek",
             base_url="api.deepseek.com",
-            api_key="sk-test",
+            api_key=TEST_API_KEY,
             model="deepseek-chat",
         )
 
@@ -38,7 +69,7 @@ def test_plan_allows_empty_weak_points(monkeypatch):
             "api_config": {
                 "provider_name": "DeepSeek",
                 "base_url": "https://api.deepseek.com",
-                "api_key": "sk-test",
+                "api_key": TEST_API_KEY,
                 "model": "deepseek-chat",
             },
             "project": {
@@ -69,7 +100,7 @@ def test_plan_prompt_is_material_driven_module_cards(monkeypatch):
             "api_config": {
                 "provider_name": "DeepSeek",
                 "base_url": "https://api.deepseek.com",
-                "api_key": "sk-test",
+                "api_key": TEST_API_KEY,
                 "model": "deepseek-chat",
             },
             "project": {
@@ -114,7 +145,7 @@ def test_plan_splits_long_materials_before_ai(monkeypatch):
             "api_config": {
                 "provider_name": "DeepSeek",
                 "base_url": "https://api.deepseek.com",
-                "api_key": "sk-test",
+                "api_key": TEST_API_KEY,
                 "model": "deepseek-chat",
             },
             "project": {
@@ -155,7 +186,7 @@ def test_plan_processes_all_material_chunks(monkeypatch):
             "api_config": {
                 "provider_name": "DeepSeek",
                 "base_url": "https://api.deepseek.com",
-                "api_key": "sk-test",
+                "api_key": TEST_API_KEY,
                 "model": "deepseek-chat",
             },
             "project": {
@@ -196,7 +227,7 @@ def test_plan_prompt_raises_coverage_for_high_target_scores(monkeypatch):
             "api_config": {
                 "provider_name": "DeepSeek",
                 "base_url": "https://api.deepseek.com",
-                "api_key": "sk-test",
+                "api_key": TEST_API_KEY,
                 "model": "deepseek-chat",
             },
             "project": {
@@ -239,7 +270,7 @@ def test_module_practice_prompt_focuses_on_current_module(monkeypatch):
             "api_config": {
                 "provider_name": "DeepSeek",
                 "base_url": "https://api.deepseek.com",
-                "api_key": "sk-test",
+                "api_key": TEST_API_KEY,
                 "model": "deepseek-chat",
             },
             "project": {
@@ -264,10 +295,11 @@ def test_module_practice_prompt_focuses_on_current_module(monkeypatch):
     assert "当前知识点：进程" in captured["user"]
 
 
-def test_invite_verify_initializes_three_demo_codes(monkeypatch, tmp_path):
+def test_invite_verify_initializes_configured_codes(monkeypatch, tmp_path):
+    _set_test_invite_codes(monkeypatch, "1", "2", "3")
     monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
 
-    response = client.post("/api/invite/verify", json={"code": "KAO-V1-DEMO-1"})
+    response = client.post("/api/invite/verify", json={"code": _test_invite_code("1")})
 
     assert response.status_code == 200
     assert response.json() == {
@@ -309,10 +341,11 @@ def test_invite_verify_caps_uses_and_budget(monkeypatch, tmp_path):
 
 
 def test_invite_chat_uses_server_config_and_decrements_budget(monkeypatch, tmp_path):
+    _set_test_invite_codes(monkeypatch, "1", "2", "3")
     monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
     monkeypatch.setenv("KAOBUDDY_AI_BASE_URL", "https://server.example")
     monkeypatch.setenv("KAOBUDDY_AI_MODEL", "server-model")
-    monkeypatch.setenv("KAOBUDDY_AI_API_KEY", "sk-server-secret")
+    monkeypatch.setenv("KAOBUDDY_AI_API_KEY", SERVER_API_KEY)
     monkeypatch.setenv("KAOBUDDY_AI_INPUT_CNY_PER_MILLION", "10")
     monkeypatch.setenv("KAOBUDDY_AI_OUTPUT_CNY_PER_MILLION", "20")
     captured = {}
@@ -327,7 +360,7 @@ def test_invite_chat_uses_server_config_and_decrements_budget(monkeypatch, tmp_p
     response = client.post(
         "/api/ai/chat",
         json={
-            "inviteCode": "KAO-V1-DEMO-1",
+            "inviteCode": _test_invite_code("1"),
             "messages": [{"role": "user", "content": "请回复一句话"}],
             "model": "ignored-front-model",
         },
@@ -339,10 +372,11 @@ def test_invite_chat_uses_server_config_and_decrements_budget(monkeypatch, tmp_p
     assert response.json()["remainingBudgetCny"] == 9.95
     assert captured["api_config"].base_url == "https://server.example"
     assert captured["api_config"].model == "server-model"
-    assert captured["api_config"].api_key == "sk-server-secret"
+    assert captured["api_config"].api_key == SERVER_API_KEY
 
 
 def test_invite_chat_missing_server_config_does_not_decrement(monkeypatch, tmp_path):
+    _set_test_invite_codes(monkeypatch, "1", "2", "3")
     monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
     monkeypatch.delenv("KAOBUDDY_AI_BASE_URL", raising=False)
     monkeypatch.delenv("KAOBUDDY_AI_MODEL", raising=False)
@@ -351,11 +385,11 @@ def test_invite_chat_missing_server_config_does_not_decrement(monkeypatch, tmp_p
     response = client.post(
         "/api/ai/chat",
         json={
-            "inviteCode": "KAO-V1-DEMO-1",
+            "inviteCode": _test_invite_code("1"),
             "messages": [{"role": "user", "content": "请回复一句话"}],
         },
     )
-    verify = client.post("/api/invite/verify", json={"code": "KAO-V1-DEMO-1"})
+    verify = client.post("/api/invite/verify", json={"code": _test_invite_code("1")})
 
     assert response.status_code == 502
     assert "邀请码已验证，但服务器 AI 还没配置好" in response.json()["detail"]
@@ -364,10 +398,11 @@ def test_invite_chat_missing_server_config_does_not_decrement(monkeypatch, tmp_p
 
 
 def test_existing_ai_endpoint_accepts_invite_code(monkeypatch, tmp_path):
+    _set_test_invite_codes(monkeypatch, "1", "2", "3")
     monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
     monkeypatch.setenv("KAOBUDDY_AI_BASE_URL", "https://server.example")
     monkeypatch.setenv("KAOBUDDY_AI_MODEL", "server-model")
-    monkeypatch.setenv("KAOBUDDY_AI_API_KEY", "sk-server-secret")
+    monkeypatch.setenv("KAOBUDDY_AI_API_KEY", SERVER_API_KEY)
     monkeypatch.setenv("KAOBUDDY_AI_INPUT_CNY_PER_MILLION", "10")
     monkeypatch.setenv("KAOBUDDY_AI_OUTPUT_CNY_PER_MILLION", "20")
     captured = {}
@@ -382,7 +417,7 @@ def test_existing_ai_endpoint_accepts_invite_code(monkeypatch, tmp_path):
     response = client.post(
         "/api/ai/plan",
         json={
-            "inviteCode": "KAO-V1-DEMO-2",
+            "inviteCode": _test_invite_code("2"),
             "project": {
                 "subject": "数据库原理",
                 "exam_date": "2026-06-30",
@@ -396,7 +431,7 @@ def test_existing_ai_endpoint_accepts_invite_code(monkeypatch, tmp_path):
     assert response.json()["content"] == "邀请码计划"
     assert response.json()["remaining"] == 49
     assert response.json()["remainingBudgetCny"] == 9.97
-    assert captured["api_config"].api_key == "sk-server-secret"
+    assert captured["api_config"].api_key == SERVER_API_KEY
     assert "数据库原理" in captured["user"]
 
 
@@ -425,7 +460,7 @@ def test_daily_plan_prompt_uses_project_and_unfinished_modules(monkeypatch):
             "api_config": {
                 "provider_name": "DeepSeek",
                 "base_url": "https://api.deepseek.com",
-                "api_key": "sk-test",
+                "api_key": TEST_API_KEY,
                 "model": "deepseek-chat",
             },
             "project": {
@@ -465,10 +500,12 @@ def test_daily_plan_prompt_uses_project_and_unfinished_modules(monkeypatch):
 # ---- CSP header tests ----
 
 
-def test_csp_header_present_on_dynamic_routes():
+def test_csp_header_present_on_dynamic_routes(monkeypatch, tmp_path):
+    _set_test_invite_codes(monkeypatch, "1", "2", "3")
+    monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
     response = client.post(
         "/api/invite/verify",
-        json={"code": "KAO-V1-DEMO-1"},
+        json={"code": _test_invite_code("1")},
     )
     csp = response.headers.get("content-security-policy")
     assert csp is not None
@@ -500,10 +537,11 @@ def test_invite_chat_rejects_empty_code():
 
 
 def test_invite_plan_oversized_body_rejected(monkeypatch, tmp_path):
+    _set_test_invite_codes(monkeypatch, "1", "2", "3")
     monkeypatch.setenv("KAOBUDDY_INVITE_STORE_PATH", str(tmp_path / "invites.json"))
     monkeypatch.setenv("KAOBUDDY_AI_BASE_URL", "https://server.example")
     monkeypatch.setenv("KAOBUDDY_AI_MODEL", "server-model")
-    monkeypatch.setenv("KAOBUDDY_AI_API_KEY", "sk-server-secret")
+    monkeypatch.setenv("KAOBUDDY_AI_API_KEY", SERVER_API_KEY)
     monkeypatch.setenv("KAOBUDDY_AI_INPUT_CNY_PER_MILLION", "10")
     monkeypatch.setenv("KAOBUDDY_AI_OUTPUT_CNY_PER_MILLION", "20")
     # Set a very low input limit so the test doesn't need huge content
@@ -512,7 +550,7 @@ def test_invite_plan_oversized_body_rejected(monkeypatch, tmp_path):
     response = client.post(
         "/api/ai/plan",
         json={
-            "inviteCode": "KAO-V1-DEMO-1",
+            "inviteCode": _test_invite_code("1"),
             "project": {"subject": "测试", "exam_date": "2026-12-31", "daily_minutes": 60},
             "materials": [
                 {"title": "test", "kind": "text", "content": "x" * 200}
@@ -537,7 +575,7 @@ def test_daily_plan_rejects_empty_modules(monkeypatch):
             "api_config": {
                 "provider_name": "DeepSeek",
                 "base_url": "https://api.deepseek.com",
-                "api_key": "sk-test",
+                "api_key": TEST_API_KEY,
                 "model": "deepseek-chat",
             },
             "project": {"subject": "测试", "exam_date": "2026-12-31", "daily_minutes": 60},

@@ -269,11 +269,14 @@ GitHub Actions 在每次 push 和 PR 时自动跑上面全部。CI 文件见 `.g
 | `KAOBUDDY_AI_MODEL` | 邀请码模式模型名 | 无 |
 | `KAOBUDDY_AI_INPUT_CNY_PER_MILLION` | 邀请码计费：输入单价 | 无 |
 | `KAOBUDDY_AI_OUTPUT_CNY_PER_MILLION` | 邀请码计费：输出单价 | 无 |
+| `KAOBUDDY_INVITE_CODES` | 初始化新邀请码数据文件时使用的码列表（逗号分隔） | 无 |
 | `KAOBUDDY_INVITE_STORE_PATH` | 邀请码数据文件路径 | `work/invites.json` |
 | `KAOBUDDY_INVITE_MAX_INPUT_CHARS` | 邀请码请求上限（字符数） | 80000 |
 | `KAOBUDDY_INVITE_MAX_TOKENS` | 邀请码请求上限（token） | 6000 |
 
 同源部署 + 用户自带 Key 模式下，以上全部留空即可。
+
+如果 `KAOBUDDY_INVITE_STORE_PATH` 指向的文件已经存在，系统会继续读取里面原有的邀请码；`KAOBUDDY_INVITE_CODES` 只在第一次初始化新文件时使用，真实邀请码不要写进仓库。
 
 ---
 
