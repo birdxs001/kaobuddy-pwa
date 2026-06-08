@@ -45,19 +45,21 @@ def invite_store_path() -> Path:
 
 
 def default_store() -> Dict[str, List[Dict[str, Any]]]:
+    return {"codes": [_code_entry(code) for code in _invite_codes_from_env()]}
+
+
+def _code_entry(code: str) -> Dict[str, Any]:
+    """Build a single invite-code entry with the same defaults as default_store."""
+    unlimited = "UNLIMITED" in code.upper()
     return {
-        "codes": [
-            {
-                "code": code,
-                "maxUses": MAX_INVITE_USES,
-                "usedCount": 0,
-                "budgetCny": MAX_INVITE_BUDGET_CNY,
-                "estimatedCostCny": 0,
-                "enabled": True,
-                "expiresAt": DEFAULT_EXPIRES_AT,
-            }
-            for code in _invite_codes_from_env()
-        ]
+        "code": code,
+        "maxUses": MAX_INVITE_USES,
+        "usedCount": 0,
+        "budgetCny": MAX_INVITE_BUDGET_CNY,
+        "estimatedCostCny": 0,
+        "enabled": True,
+        "expiresAt": "" if unlimited else DEFAULT_EXPIRES_AT,
+        **({"unlimited": True} if unlimited else {}),
     }
 
 
@@ -70,9 +72,18 @@ def load_store() -> Dict[str, List[Dict[str, Any]]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"codes": []}
+        data = {"codes": []}
     if not isinstance(data, dict) or not isinstance(data.get("codes"), list):
-        return {"codes": []}
+        data = {"codes": []}
+
+    # Sync env-var codes into the store so new codes appear on next deploy.
+    env_codes = _invite_codes_from_env()
+    existing = {normalize_code(str(entry.get("code", ""))) for entry in data["codes"]}
+    new_entries = [_code_entry(c) for c in env_codes if normalize_code(c) not in existing]
+    if new_entries:
+        data["codes"].extend(new_entries)
+        save_store(data)
+
     return data
 
 
@@ -128,7 +139,13 @@ def estimated_cost(item: Dict[str, Any]) -> float:
         return 0.0
 
 
+def is_unlimited(item: Dict[str, Any]) -> bool:
+    return bool(item.get("unlimited", False))
+
+
 def is_expired(item: Dict[str, Any]) -> bool:
+    if is_unlimited(item):
+        return False
     expires_at = str(item.get("expiresAt", "")).strip()
     if not expires_at:
         return False
@@ -141,12 +158,14 @@ def is_expired(item: Dict[str, Any]) -> bool:
 def status_for_item(item: Dict[str, Any] | None) -> InviteStatus:
     if not item:
         return InviteStatus(False, 0, 0.0, "邀请码无效或已过期")
+    if not bool(item.get("enabled", False)) or is_expired(item):
+        return InviteStatus(False, 0, 0.0, "邀请码无效或已过期")
+    if is_unlimited(item):
+        return InviteStatus(True, -1, -1.0, "邀请码有效（无限额）")
     max_uses = capped_max_uses(item)
     budget = capped_budget(item)
     remaining = max(0, max_uses - used_count(item))
     remaining_budget = round(max(0.0, budget - estimated_cost(item)), 2)
-    if not bool(item.get("enabled", False)) or is_expired(item):
-        return InviteStatus(False, 0, 0.0, "邀请码无效或已过期")
     if remaining <= 0:
         return InviteStatus(False, 0, remaining_budget, "体验次数已用完，请切换到自带 API Key")
     if remaining_budget <= 0:
@@ -165,6 +184,8 @@ def ensure_invite_can_call(code: str, estimated_cost_cny: float) -> InviteStatus
     status = status_for_item(item)
     if not status.valid:
         raise InviteError(status.message)
+    if is_unlimited(item or {}):
+        return status
     if estimated_cost_cny > status.remaining_budget_cny:
         raise InviteError("这次请求预计会超过体验预算，请缩短资料或切换到自带 API Key")
     return status
@@ -175,6 +196,8 @@ def record_invite_usage(code: str, cost_cny: float) -> InviteStatus:
     item = find_invite(data, code)
     if not item:
         raise InviteError("邀请码无效或已过期")
+    if is_unlimited(item):
+        return status_for_item(item)
     item["usedCount"] = used_count(item) + 1
     item["estimatedCostCny"] = round(estimated_cost(item) + max(0.0, cost_cny), 6)
     save_store(data)
