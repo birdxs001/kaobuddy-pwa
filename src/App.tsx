@@ -45,7 +45,7 @@ const presets: ProviderPreset[] = [
   { provider_name: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro" },
   { provider_name: "Kimi 国内", base_url: "https://api.moonshot.cn/v1", model: "kimi-k2.5" },
   { provider_name: "Kimi 国际", base_url: "https://api.moonshot.ai/v1", model: "kimi-k2.5" },
-  { provider_name: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-5.2" },
+  { provider_name: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-5.5" },
   { provider_name: "自定义", base_url: "https://", model: "" }
 ];
 
