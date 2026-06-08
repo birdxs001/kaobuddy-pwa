@@ -42,10 +42,10 @@ type UploadQueueItem = {
 };
 
 const presets: ProviderPreset[] = [
-  { provider_name: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-chat" },
-  { provider_name: "Kimi 国内", base_url: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
-  { provider_name: "Kimi 国际", base_url: "https://api.moonshot.ai/v1", model: "moonshot-v1-8k" },
-  { provider_name: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
+  { provider_name: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro" },
+  { provider_name: "Kimi 国内", base_url: "https://api.moonshot.cn/v1", model: "kimi-k2.5" },
+  { provider_name: "Kimi 国际", base_url: "https://api.moonshot.ai/v1", model: "kimi-k2.5" },
+  { provider_name: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-5.2" },
   { provider_name: "自定义", base_url: "https://", model: "" }
 ];
 
@@ -1211,7 +1211,9 @@ export default function App() {
           <label>邀请码<input value={inviteState.inviteCode} onChange={(event) => saveInviteState(updateInviteCodeDraft(inviteState, event.target.value))} placeholder="输入管理员给你的邀请码" /></label>
           <p className="hint">
             {inviteState.validatedAt
-              ? "邀请码有效。"
+              ? inviteState.remaining === -1
+                ? "无限额，永不过期。"
+                : `邀请码有效，剩余 ${inviteState.remaining} 次，预算 ¥${inviteState.remainingBudgetCny}。`
               : "输入邀请码后先验证一次；后续生成计划、讲解、卡片都会自动带上它。"}
           </p>
           <div className="actions">
