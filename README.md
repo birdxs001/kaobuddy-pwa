@@ -35,8 +35,8 @@
 | 预设 | 模型 |
 |---|---|
 | DeepSeek（默认） | deepseek-v4 pro/flash |
-| Kimi 国内 | moonshot-v1-8k |
-| Kimi 国际 | moonshot-v1-8k |
+| Kimi 国内 | kimi-k2.6 |
+| Kimi 国际 | kimi-k2.6 |
 | OpenAI | gpt-5.5/mini |
 | 自定义 | 任意 OpenAI-compatible |
 
