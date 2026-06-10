@@ -61,6 +61,13 @@ def estimate_cost_cny(prompt_tokens: int, completion_tokens: int) -> float:
     return round((prompt_tokens / 1_000_000 * input_price) + (completion_tokens / 1_000_000 * output_price), 6)
 
 
+def completion_timeout_seconds(api_config: ApiConfig, *, stream: bool = False) -> int:
+    base_timeout = 120 if stream else 60
+    max_timeout = 420 if stream else 300
+    scaled_timeout = int(api_config.max_tokens * 0.03)
+    return min(max_timeout, max(base_timeout, scaled_timeout))
+
+
 async def chat_completion(api_config: ApiConfig, messages: List[ChatMessage]) -> str:
     content, _usage = await chat_completion_with_usage(api_config, messages)
     return content
@@ -80,12 +87,14 @@ async def chat_completion_with_usage(api_config: ApiConfig, messages: List[ChatM
     }
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=completion_timeout_seconds(api_config)) as client:
             response = await client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text[:400]
         raise AiClientError(f"AI 服务返回错误：{exc.response.status_code} {detail}") from exc
+    except httpx.TimeoutException as exc:
+        raise AiClientError("AI 生成超时：测试连接成功只代表账号可用，实际生成计划/讲解会更久。请稍后重试，或减少资料长度后再生成。") from exc
     except httpx.HTTPError as exc:
         raise AiClientError(f"AI 服务连接失败：{exc}") from exc
 
@@ -119,7 +128,7 @@ async def chat_completion_stream(api_config: ApiConfig, messages: List[ChatMessa
     }
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=completion_timeout_seconds(api_config, stream=True)) as client:
             async with client.stream("POST", endpoint, json=payload, headers=headers) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
@@ -141,5 +150,7 @@ async def chat_completion_stream(api_config: ApiConfig, messages: List[ChatMessa
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text[:400]
         raise AiClientError(f"AI 服务返回错误：{exc.response.status_code} {detail}") from exc
+    except httpx.TimeoutException as exc:
+        raise AiClientError("AI 生成超时：测试连接成功只代表账号可用，实际生成学习卡片会更久。请稍后重试，或减少资料长度后再生成。") from exc
     except httpx.HTTPError as exc:
         raise AiClientError(f"AI 服务连接失败：{exc}") from exc
