@@ -1,10 +1,12 @@
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.ai_client import chat_completion_with_usage, completion_timeout_seconds
 from backend.app.main import app
-from backend.app.schemas import ApiConfig
+from backend.app.schemas import ApiConfig, ChatMessage
 
 
 client = TestClient(app)
@@ -55,6 +57,52 @@ def test_api_config_requires_http_base_url():
             api_key=TEST_API_KEY,
             model="deepseek-chat",
         )
+
+
+def test_ai_client_timeout_scales_for_long_generation_requests():
+    quick_test_config = ApiConfig(
+        provider_name="DeepSeek",
+        base_url="https://api.deepseek.com",
+        api_key=TEST_API_KEY,
+        model="deepseek-chat",
+        max_tokens=1800,
+    )
+    long_plan_config = quick_test_config.model_copy(update={"max_tokens": 8000})
+
+    assert completion_timeout_seconds(quick_test_config) == 60
+    assert completion_timeout_seconds(long_plan_config) >= 180
+
+
+async def test_ai_timeout_error_explains_generation_may_still_be_valid(monkeypatch):
+    async def fake_post(*args, **kwargs):
+        raise httpx.ReadTimeout("timed out while waiting for response")
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        post = fake_post
+
+    monkeypatch.setattr("backend.app.ai_client.httpx.AsyncClient", FakeAsyncClient)
+    api_config = ApiConfig(
+        provider_name="DeepSeek",
+        base_url="https://api.deepseek.com",
+        api_key=TEST_API_KEY,
+        model="deepseek-chat",
+        max_tokens=8000,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await chat_completion_with_usage(api_config, [ChatMessage(role="user", content="生成完整计划")])
+
+    assert "AI 生成超时" in str(exc_info.value)
+    assert "测试连接成功" in str(exc_info.value)
 
 
 def test_plan_allows_empty_weak_points(monkeypatch):
