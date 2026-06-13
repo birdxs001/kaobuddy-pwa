@@ -154,20 +154,52 @@
 
 如果你是开发者，或者想自己从源码启动：
 
+适合只是自己在电脑上用。第一次会慢一点，因为要装依赖和构建页面。
+
+源码启动需要本机已经装好 Python 3 和 Node.js LTS。脚本会自动装依赖、构建页面、启动服务，并打开 `http://127.0.0.1:8000`。
+
 **Mac**：双击 `open-kaobuddy.command`
 
 **Windows**：双击 `open-kaobuddy.bat`
 
-源码启动需要本机已经装好 Python 3 和 Node.js LTS。脚本会自动装依赖、构建页面、启动服务，并打开 `http://127.0.0.1:8000`。
+如果 macOS 提示不让打开，可以在终端里执行一次：
+
+```bash
+chmod +x open-kaobuddy.command
+./open-kaobuddy.command
+```
+
+如果双击后窗口一闪而过，通常是 Python 或 Node.js 没装好。可以在项目文件夹空白处右键，选择“在终端中打开”，然后跑：
+
+```powershell
+py -3 --version
+node --version
+npm --version
+open-kaobuddy.bat
+```
+
+前三条都能显示版本号，脚本一般就能正常跑。
 
 ### 开发者启动
 
 ```bash
 npm install
-npm run dev          # 打开 http://localhost:5173，API 自动代理到 8000
+npm run dev
 ```
 
-### 自己部署
+`npm run dev` 会同时启动 FastAPI 后端和 Vite 前端：
+- 后端：`http://127.0.0.1:8000`
+- 前端开发页：`http://localhost:5173`
+
+如果只想开前端：
+
+```bash
+npm run dev:frontend
+```
+
+注意：只开前端时，`8000` 后端必须另外启动，不然测试 API Key 会失败。
+
+### 自己部署到云平台
 
 如果想让手机、平板或者别人也能访问，就需要部署到自己的云平台账号里。项目已经带了 Dockerfile、Fly.io 配置和 Railway 启动配置。
 
