@@ -12,6 +12,7 @@ import { readAsDataUrl, readDocumentText, readPdfText, readTextFile } from "./fi
 import { getGenerationGuard } from "./generationGuards";
 import { applyInviteVerification, isInviteReady, updateInviteCodeDraft } from "./inviteState";
 import { exportMockExamPdf } from "./pdfExport";
+import { projectTextDraft, updateProjectTextDraft } from "./projectDrafts";
 import { createId, storage } from "./storage";
 import type {
   AiNote, AiMode, ApiConfig, CardProgress, InviteState, LearnCard,
@@ -135,7 +136,7 @@ export default function App() {
   const [editingProjectId, setEditingProjectId] = useState("");
   const [videoUrl, setVideoUrl] = useState("");
   const [handwritingHint, setHandwritingHint] = useState("");
-  const [extra, setExtra] = useState("");
+  const [extraDrafts, setExtraDrafts] = useState<Record<string, string>>({});
   const [mistakeDraft, setMistakeDraft] = useState(emptyMistake);
   const [weakPointDraft, setWeakPointDraft] = useState(emptyWeakPoint);
   const [mockQuestionTypes, setMockQuestionTypes] = useState("");
@@ -207,6 +208,13 @@ export default function App() {
     () => projects.find((project) => project.id === activeProjectId) || projects[0],
     [activeProjectId, projects]
   );
+  const activeProjectDraftId = activeProject?.id || "";
+  const extra = projectTextDraft(extraDrafts, activeProjectDraftId);
+
+  function setExtra(value: string) {
+    setExtraDrafts((current) => updateProjectTextDraft(current, activeProjectDraftId, value));
+  }
+
   const scopedMaterials = useMemo(
     () => materials.filter((item) => item.project_id === activeProject?.id),
     [materials, activeProject]
