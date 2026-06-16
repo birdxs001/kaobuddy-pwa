@@ -41,7 +41,7 @@
 | Kimi 国际 | kimi-k2.6 |
 | OpenAI | gpt-5.5/mini |
 | 自定义 | 任意 OpenAI-compatible |
-
+因为deepseek没有多模态，所以暂时只能提取文字，资料多的话生成时间会长一点，请耐心等待。
 支持两种模式：
 - **BYOK（自带 Key）**：填自己的 API Key，请求直接从浏览器发到你的 AI 服务商。Key 存 localStorage，服务端不落盘。
 - **邀请码（beta）**：如果你有邀请码，可以先不填 Key，用服务端配置的 API 额度体验。用完再切换回你自己的API。
